@@ -2,6 +2,8 @@ module github.com/forside/cflag
 
 go 1.18
 
+retract v0.1.0
+
 require (
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.8.4

@@ -33,9 +33,56 @@ type testContext struct {
 	paramS     *string
 }
 
+type outputCaptureContext struct {
+	outOrig, errOrig *os.File
+	r, w             *os.File
+}
+
+// startCaptureOutput redirects stdout and stderr to capture any output written afterwards.
+// Returns a capture context or nil and an error.
+func startCaptureOutput() (*outputCaptureContext, error) {
+	ctx := new(outputCaptureContext)
+	var err error
+
+	// Create pipe to transfer output.
+	ctx.outOrig = os.Stdout
+	ctx.errOrig = os.Stderr
+	ctx.r, ctx.w, err = os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+
+	// Redirect stdout and call function.
+	os.Stdout = ctx.w
+	os.Stderr = ctx.w
+
+	return ctx, nil
+}
+
+// stopCaptureOutput captures the output written to stdout and stderr since
+// startCaptureOutput was called and routes stdout and stderr back to their original destination.
+// Returns the captured output or an empty string and an error.
+func (ctx *outputCaptureContext) stopCaptureOutput() (string, error) {
+	if ctx.outOrig == nil || ctx.errOrig == nil || ctx.r == nil || ctx.w == nil {
+		return "", fmt.Errorf("uninitialised capture context")
+	}
+
+	os.Stdout = ctx.outOrig
+	os.Stderr = ctx.errOrig
+
+	// Close pipe and read output.
+	_ = ctx.w.Close()
+	output, err := io.ReadAll(ctx.r)
+
+	return string(output), err
+}
+
+// captureOutput runs f and captures any output to stdout and stderr.
+// Returns the output and the error returned by f.
 func captureOutput(f func() error) (string, error) {
 	// Create pipe to transfer output.
 	outOrig := os.Stdout
+	errOrig := os.Stderr
 	r, w, err := os.Pipe()
 	if err != nil {
 		return "", err
@@ -43,19 +90,24 @@ func captureOutput(f func() error) (string, error) {
 
 	// Redirect stdout and call function.
 	os.Stdout = w
+	os.Stderr = w
 	err = f()
 	os.Stdout = outOrig
+	os.Stderr = errOrig
 
 	// Close pipe and read output.
 	_ = w.Close()
-	output, err := io.ReadAll(r)
+	output, _ := io.ReadAll(r)
 
 	return string(output), err
 }
 
+// captureOutput runs f and captures any output to stdout and stderr using a channel.
+// Returns the output and the error returned by f.
 func captureOutputC(f func() error) (string, error) {
 	// Create pipe to transfer output.
 	outOrig := os.Stdout
+	errOrig := os.Stderr
 	r, w, err := os.Pipe()
 	if err != nil {
 		return "", err
@@ -74,49 +126,47 @@ func captureOutputC(f func() error) (string, error) {
 
 	// Redirect stdout and call function.
 	os.Stdout = w
+	os.Stderr = w
 	err = f()
 	os.Stdout = outOrig
+	os.Stderr = errOrig
 
 	// Close pipe and read output from channel.
 	_ = w.Close()
 	output := <-outC
 
-	return string(output), err
+	return output, err
 }
 
+// buildTestContext defines some flags and commands used by test functions.
 func buildTestContext() *testContext {
 	ctx := new(testContext)
 	ctx.arguments = slices.Clone(os.Args)
 
 	// Define base flags.
-	ctx.flags = flag.NewFlagSet("", flag.ExitOnError)
+	ctx.flags = NewFlagSet("", flag.ExitOnError)
 	ctx.flags.SortFlags = false
-	ctx.flags.ParseErrorsWhitelist.UnknownFlags = true
 	ctx.paramTest0 = ctx.flags.Int("test0", 0, "Test 0.")
 	ctx.paramVersion = ctx.flags.BoolP("version", "v", false, "Display the application version.")
 
 	// Define flags for command 'foo'.
-	ctx.flagsFoo = flag.NewFlagSet("", flag.ExitOnError)
+	ctx.flagsFoo = NewFlagSet("", flag.ExitOnError)
 	ctx.flagsFoo.SortFlags = false
-	ctx.flagsFoo.ParseErrorsWhitelist.UnknownFlags = true
 	ctx.paramTest1 = ctx.flagsFoo.Int("test1", 1, "Test 1.")
 
 	// Define flags for command 'foo/bar'
-	ctx.flagsFooBar = flag.NewFlagSet("", flag.ExitOnError)
+	ctx.flagsFooBar = NewFlagSet("", flag.ExitOnError)
 	ctx.flagsFooBar.SortFlags = false
-	ctx.flagsFooBar.ParseErrorsWhitelist.UnknownFlags = true
 	ctx.paramTest2 = ctx.flagsFooBar.Int("test2", 2, "Test 2.")
 
 	// Define flags for command 'bar'.
-	ctx.flagsWorld = flag.NewFlagSet("", flag.ExitOnError)
+	ctx.flagsWorld = NewFlagSet("", flag.ExitOnError)
 	ctx.flagsWorld.SortFlags = false
-	ctx.flagsWorld.ParseErrorsWhitelist.UnknownFlags = true
 	ctx.paramTest3 = ctx.flagsWorld.Int("test3", 3, "Test 3.")
 
 	// Define flags for command 'types'.
-	ctx.flagsTypes = flag.NewFlagSet("", flag.ExitOnError)
+	ctx.flagsTypes = NewFlagSet("", flag.ExitOnError)
 	ctx.flagsTypes.SortFlags = false
-	ctx.flagsTypes.ParseErrorsWhitelist.UnknownFlags = true
 	ctx.paramB = ctx.flagsTypes.BoolP("bool", "b", false, "Bool flag.")
 	ctx.paramI = ctx.flagsTypes.IntP("int", "i", 0, "Int flag.")
 	ctx.paramS = ctx.flagsTypes.StringP("str", "s", "", "String flag.")
@@ -124,10 +174,11 @@ func buildTestContext() *testContext {
 	// Reset global cflag state and add commands.
 	Reset()
 	SetDescription("cflag test application.")
-	ctx.cmdFoo = Cmd("foo", "Foo flags.", ctx.flagsFoo)
-	ctx.cmdFooBar = ctx.cmdFoo.Cmd("bar", "Bar flags.", ctx.flagsFooBar)
-	ctx.cmdWorld = Cmd("world", "World flags.", ctx.flagsWorld)
-	ctx.cmdTypes = Cmd("types", "Types flags.", ctx.flagsTypes)
+	ctx.cmdFoo, _ = Cmd("foo", "Foo command.", ctx.flagsFoo)
+	ctx.cmdFoo.SetDescription("Foo command description.")
+	ctx.cmdFooBar, _ = ctx.cmdFoo.Cmd("bar", "Bar command.", ctx.flagsFooBar)
+	ctx.cmdWorld, _ = Cmd("world", "World command.", ctx.flagsWorld)
+	ctx.cmdTypes, _ = Cmd("types", "Types command.", ctx.flagsTypes)
 
 	return ctx
 }
@@ -136,7 +187,7 @@ func TestParse(t *testing.T) {
 	a := assert.New(t)
 	ctx := buildTestContext()
 
-	// Setup arguments.
+	// Setup test arguments.
 	ctx.arguments = append(ctx.arguments,
 		[]string{"--test0", "10", "foo", "--test1", "11", "bar", "--test2", "12", "--test3", "13"}...,
 	)
@@ -146,26 +197,28 @@ func TestParse(t *testing.T) {
 
 	// Check version flag.
 	if *ctx.paramVersion {
+		t.Logf("%s\n", versionString)
+		// Print version so TestVersion can catch it.
 		fmt.Printf("%s\n", versionString)
 		return
 	}
 
 	// Print flags.
-	fmt.Printf("base: %t\n", IsActive())
-	fmt.Printf("foo: %t\n", ctx.cmdFoo.IsActive())
-	fmt.Printf("foo/bar: %t\n", ctx.cmdFooBar.IsActive())
-	fmt.Printf("world: %t\n", ctx.cmdWorld.IsActive())
+	t.Logf("base: %t\n", IsActive())
+	t.Logf("foo: %t\n", ctx.cmdFoo.IsActive())
+	t.Logf("foo/bar: %t\n", ctx.cmdFooBar.IsActive())
+	t.Logf("world: %t\n", ctx.cmdWorld.IsActive())
 
-	fmt.Printf("Test 0: %t %d\n", ctx.flags.Changed("test0"), *ctx.paramTest0)
-	fmt.Printf("Test 1: %t %d\n", ctx.flagsFoo.Changed("test1"), *ctx.paramTest1)
-	fmt.Printf("Test 2: %t %d\n", ctx.flagsFooBar.Changed("test2"), *ctx.paramTest2)
-	fmt.Printf("Test 3: %t %d\n", ctx.flagsWorld.Changed("test3"), *ctx.paramTest3)
+	t.Logf("Test 0: %t %d\n", ctx.flags.Changed("test0"), *ctx.paramTest0)
+	t.Logf("Test 1: %t %d\n", ctx.flagsFoo.Changed("test1"), *ctx.paramTest1)
+	t.Logf("Test 2: %t %d\n", ctx.flagsFooBar.Changed("test2"), *ctx.paramTest2)
+	t.Logf("Test 3: %t %d\n", ctx.flagsWorld.Changed("test3"), *ctx.paramTest3)
 
 	// Check flag values.
-	a.Equal(true, IsActive())
-	a.Equal(true, ctx.cmdFoo.IsActive())
-	a.Equal(true, ctx.cmdFooBar.IsActive())
-	a.Equal(false, ctx.cmdWorld.IsActive())
+	a.True(IsActive())
+	a.True(ctx.cmdFoo.IsActive())
+	a.True(ctx.cmdFooBar.IsActive())
+	a.False(ctx.cmdWorld.IsActive())
 	a.Equal(10, *ctx.paramTest0)
 	a.Equal(11, *ctx.paramTest1)
 	a.Equal(12, *ctx.paramTest2)
@@ -176,7 +229,7 @@ func TestTypes(t *testing.T) {
 	a := assert.New(t)
 	ctx := buildTestContext()
 
-	// Setup arguments.
+	// Setup test arguments.
 	ctx.arguments = append(ctx.arguments,
 		[]string{"types", "-b", "-i", "1", "-s", "foobar"}...,
 	)
@@ -184,57 +237,23 @@ func TestTypes(t *testing.T) {
 	// Run cflag parser.
 	Parse(ctx.arguments, ctx.flags)
 
-	fmt.Printf("Bool flag: %t %t\n", ctx.flagsTypes.Changed("bool"), *ctx.paramB)
-	fmt.Printf("Int flag: %t %d\n", ctx.flagsTypes.Changed("int"), *ctx.paramI)
-	fmt.Printf("String flag: %t %s\n", ctx.flagsTypes.Changed("str"), *ctx.paramS)
+	// Print flags.
+	t.Logf("Bool flag: %t %t\n", ctx.flagsTypes.Changed("bool"), *ctx.paramB)
+	t.Logf("Int flag: %t %d\n", ctx.flagsTypes.Changed("int"), *ctx.paramI)
+	t.Logf("String flag: %t %s\n", ctx.flagsTypes.Changed("str"), *ctx.paramS)
 
 	// Check parsed values.
-	a.Equal(true, *ctx.paramB)
+	a.True(*ctx.paramB)
 	a.Equal(1, *ctx.paramI)
 	a.Equal("foobar", *ctx.paramS)
-}
-
-func TestHelp(t *testing.T) {
-	a := assert.New(t)
-	ctx := buildTestContext()
-
-	// Setup arguments.
-	ctx.arguments = slices.Insert(ctx.arguments, 1, "--help")
-
-	// The test framework panics when os.Exit() is called.
-	// Use recover to catch this after the help is printed.
-	defer func() {
-		if r := recover(); r != nil {
-			a.Contains(r, "os.Exit(0)")
-		}
-	}()
-
-	// Capture output from function.
-	output, err := captureOutput(func() error {
-		// Run cflag parser.
-		Parse(ctx.arguments, ctx.flags)
-		return nil
-	})
-	a.Nil(err)
-
-	// Check output for help string.
-	a.Contains(output, "cflag test application.")
 }
 
 func TestVersion(t *testing.T) {
 	a := assert.New(t)
 
-	// Setup arguments.
+	// Setup test arguments.
 	argsOrig := slices.Clone(os.Args)
 	os.Args = slices.Insert(os.Args, 1, "--version")
-
-	// The test framework panics when os.Exit() is called.
-	// Use recover to catch this after the version is printed.
-	defer func() {
-		if r := recover(); r != nil {
-			a.Contains(r, "os.Exit(0)")
-		}
-	}()
 
 	// Capture output from function.
 	output, err := captureOutput(func() error {
@@ -246,31 +265,280 @@ func TestVersion(t *testing.T) {
 	os.Args = argsOrig
 
 	// Check output for version string.
-	println("Version:", output)
-	a.EqualValues(versionString+"\n", output)
+	t.Logf("Version: %s\n", output)
+	a.Equal(versionString+"\n", output)
+}
+
+func TestMisc(t *testing.T) {
+	a := assert.New(t)
+	ctx := buildTestContext()
+
+	// Setup test arguments.
+	ctx.arguments = append(ctx.arguments,
+		[]string{"--test0", "10", "foo", "--test1", "11", "bar", "--test2", "12", "--test3", "13"}...,
+	)
+
+	// Run cflag parser.
+	Parse(ctx.arguments, ctx.flags)
+
+	// Find commands.
+	cmdFoo := Lookup("foo")
+	cmdWorld := Lookup("world")
+	cmdOther := Lookup("other")
+
+	// Print command states.
+	t.Logf("Foo defined:%t active:%t\n", cmdFoo != nil, cmdFoo != nil && cmdFoo.IsActive())
+	t.Logf("World defined:%t active:%t\n", cmdWorld != nil, cmdWorld != nil && cmdWorld.IsActive())
+	t.Logf("Other defined:%t active:%t\n", cmdOther != nil, cmdOther != nil && cmdOther.IsActive())
+
+	// Check commands.
+	a.NotNil(cmdFoo)
+	a.NotNil(cmdWorld)
+	a.Nil(cmdOther)
+
+	// Find active commands.
+	fooActive := Active("foo")
+	worldActive := Active("world")
+	otherActive := Active("other")
+
+	// Print command activation.
+	t.Logf("Foo active: %t\n", fooActive)
+	t.Logf("World active: %t\n", worldActive)
+	t.Logf("Other active: %t\n", otherActive)
+
+	// Check command activation.
+	a.True(fooActive)
+	a.False(worldActive)
+	a.False(otherActive)
+}
+
+func TestHelp(t *testing.T) {
+	a := assert.New(t)
+	ctx := buildTestContext()
+
+	// Setup test arguments.
+	ctx.arguments = slices.Insert(ctx.arguments, 1, "--help")
+
+	var capCtx *outputCaptureContext
+
+	// Define custom Usage function which is called automatically
+	// during parsing when -h, --help is found.
+	Usage = func(c *Command) {
+		fmt.Printf("%s\n%s\nCommands:\n%sFlags:\n%s", c.GetUsage(), c.GetDescription(), c.CommandUsages(), c.FlagUsages())
+	}
+
+	// The test framework panics when os.Exit() is called.
+	// Use recover to catch this after the help is printed.
+	defer func() {
+		if r := recover(); r != nil {
+			a.Contains(r, "os.Exit(0)")
+
+			// Receive captured output.
+			a.NotNil(capCtx)
+			output, err := capCtx.stopCaptureOutput()
+			a.NoError(err)
+			t.Log(output)
+
+			// Check output for help string.
+			a.Contains(output, "cflag test application.")
+		}
+	}()
+
+	// Capture output to stdout and stderr.
+	capCtx, err := startCaptureOutput()
+	a.NoError(err)
+
+	// Run cflag parser.
+	Parse(ctx.arguments, ctx.flags)
+
+	// Code from here on does not execute.
+	// Instead, test execution jumps to the deferred function above
+	// when os.Exit(0) is called inside cflag.
+
+	// Receive captured output.
+	output, err := capCtx.stopCaptureOutput()
+
+	a.NoError(err)
+	t.Log(output)
+
+	// Check output for help string.
+	a.Contains(output, "cflag test application.")
+}
+
+func TestHidden(t *testing.T) {
+	a := assert.New(t)
+	ctx := buildTestContext()
+
+	// Mark the command as hidden.
+	ctx.cmdWorld.MarkHidden()
+
+	// Setup test arguments.
+	ctx.arguments = append(ctx.arguments,
+		[]string{"-h"}...,
+	)
+
+	var capCtx *outputCaptureContext
+
+	// The test framework panics when os.Exit() is called.
+	// Use recover to catch this after the help is printed.
+	defer func() {
+		if r := recover(); r != nil {
+			a.Contains(r, "os.Exit(0)")
+
+			// Receive captured output.
+			a.NotNil(capCtx)
+			output, err := capCtx.stopCaptureOutput()
+			a.NoError(err)
+			t.Log(output)
+
+			// Check output for help string.
+			a.NotContains(output, "world")
+		}
+	}()
+
+	// Capture output to stdout and stderr.
+	capCtx, err := startCaptureOutput()
+	a.NoError(err)
+
+	// Run cflag parser.
+	Parse(ctx.arguments, ctx.flags)
+}
+
+func TestDeprecated(t *testing.T) {
+	a := assert.New(t)
+	ctx := buildTestContext()
+
+	// Mark the command as deprecated.
+	ctx.cmdWorld.MarkDeprecated()
+
+	// Setup test arguments.
+	ctx.arguments = append(ctx.arguments,
+		[]string{"world", "-h"}...,
+	)
+
+	var capCtx *outputCaptureContext
+
+	// The test framework panics when os.Exit() is called.
+	// Use recover to catch this after the help is printed.
+	defer func() {
+		if r := recover(); r != nil {
+			a.Contains(r, "os.Exit(0)")
+
+			// Receive captured output.
+			a.NotNil(capCtx)
+			output, err := capCtx.stopCaptureOutput()
+			a.NoError(err)
+			t.Log(output)
+
+			// Check output for help string.
+			a.Contains(output, "DEPRECATED")
+		}
+	}()
+
+	// Capture output to stdout and stderr.
+	capCtx, err := startCaptureOutput()
+	a.NoError(err)
+
+	// Run cflag parser.
+	Parse(ctx.arguments, ctx.flags)
+}
+
+func TestDeprecatedUse(t *testing.T) {
+	a := assert.New(t)
+	ctx := buildTestContext()
+
+	// Mark the world command as deprecated.
+	ctx.cmdWorld.MarkDeprecated()
+
+	// Setup test arguments.
+	ctx.arguments = append(ctx.arguments,
+		[]string{"world", "--test3", "3"}...,
+	)
+
+	// Capture output from function.
+	output, err := captureOutput(func() error {
+		// Run cflag parser.
+		Parse(ctx.arguments, ctx.flags)
+		return nil
+	})
+	a.Nil(err)
+	a.NotEmpty(output)
+
+	// Print flags.
+	t.Logf("world: %t\n", ctx.cmdWorld.IsActive())
+	t.Logf("Test 3: %t %d\n", ctx.flagsWorld.Changed("test3"), *ctx.paramTest3)
+
+	// Check flag values.
+	a.True(ctx.cmdWorld.IsActive())
+	a.Equal(3, *ctx.paramTest3)
+	a.Contains(output, "deprecated")
+
+	t.Log(output)
 }
 
 func TestStandalone(t *testing.T) {
 	a := assert.New(t)
 
-	// Setup arguments.
+	// Setup test arguments.
 	args := slices.Clone(os.Args)
 	args = append(args, "--test", "1")
 
 	// Define flags.
-	flags := flag.NewFlagSet("", flag.ExitOnError)
+	flags := NewFlagSet("", flag.ExitOnError)
 	flags.SortFlags = false
-	flags.ParseErrorsWhitelist.UnknownFlags = true
 	paramTest := flags.Int("test", 0, "Test.")
 
-	// Create command.
-	cmd := NewCommand("test", "Test.", flags)
+	// Create top-level command with empty name.
+	cmd := NewCommand("", "Test.", flags)
 
 	// Run cflag parser.
-	cmd.Parse(args[1:])
+	cmd.Parse(args)
 
-	fmt.Printf("Test: %t %d\n", flags.Changed("test"), *paramTest)
+	t.Logf("Test: %t %d\n", flags.Changed("test"), *paramTest)
 
 	// Check parsed value.
 	a.Equal(1, *paramTest)
+}
+
+func TestExample(t *testing.T) {
+	a := assert.New(t)
+
+	// Reset global cflag register.
+	Reset()
+
+	// Setup test arguments.
+	args := slices.Clone(os.Args)
+	args = append(args, "-v", "foo", "--test1", "11", "bar", "--test2", "12")
+
+	// Define top-level flags.
+	flags := NewFlagSet("", flag.ExitOnError)
+	flags.SortFlags = false
+	paramVersion := flags.BoolP("version", "v", false, "Display the application version.")
+
+	// Define foo command.
+	flagsFoo := NewFlagSet("", flag.ExitOnError)
+	flagsFoo.SortFlags = false
+	paramFooTest1 := flagsFoo.Int("test1", 1, "Test 1.")
+	cmdFoo, _ := Cmd("foo", "Foo command.", flagsFoo)
+
+	// Define foo/bar command.
+	flagsFooBar := NewFlagSet("", flag.ExitOnError)
+	paramFooBarTest2 := flagsFooBar.Int("test2", 2, "Test 2.")
+	flagsFooBar.SortFlags = false
+	cmdFooBar, _ := cmdFoo.Cmd("bar", "Bar command", flagsFooBar)
+
+	// Parse arguments and print values.
+	Parse(args, flags)
+	t.Logf("version flag: %t\n", *paramVersion)
+	t.Logf("foo command supplied: %t\n", cmdFoo.IsActive())
+	t.Logf("foo/bar command supplied: %t\n", cmdFooBar.IsActive())
+	t.Logf("test1 flag: %d\n", *paramFooTest1)
+	t.Logf("test2 flag: %d\n", *paramFooBarTest2)
+
+	// Check values.
+	a.True(cmdFoo.IsActive())
+	a.True(cmdFooBar.IsActive())
+	a.True(*paramVersion)
+	a.Equal(11, *paramFooTest1)
+	a.Equal(12, *paramFooBarTest2)
 }

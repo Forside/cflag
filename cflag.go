@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"fmt"
 	flag "github.com/spf13/pflag"
+	"io"
 	"os"
 	"slices"
 	"strings"
 )
 
+// A Command represents a (sub)command with a set of defined flags.
 type Command struct {
 	name        string
 	usage       string
@@ -16,58 +18,146 @@ type Command struct {
 	flags       *flag.FlagSet
 	commands    []*Command
 	active      bool
+	hidden      bool
+	deprecated  bool
+	output      io.Writer
+
+	Usage func(c *Command)
 }
 
+// The gap between the start of the line and the command name.
+const commandGapLen = 2
+
+// The minimum gap between the command name and the command usage.
+const commandUsageGapLen = 3
+
+// Holds the global command register,
+// i.e. top-level flags and commands defined for the application.
 var command Command
 
-// AddCommand adds command to the global register.
+// filterSlice filters out all elements where test returns false.
+func filterSlice[T any](slice []T, test func(T) bool) []T {
+	var res []T
+	for _, s := range slice {
+		if test(s) {
+			res = append(res, s)
+		}
+	}
+	return res
+}
+
+// AddCommand adds command as a subcommand.
 // When a command with the same name already exists,
-// the operation is cancelled and false is returned.
-// Reports whether the command is added successfully.
-func (c *Command) AddCommand(command *Command) bool {
+// the operation is cancelled and an error is returned.
+func (c *Command) AddCommand(command *Command) error {
 	if command == nil || len(command.name) == 0 {
-		return false
+		return fmt.Errorf("invalid parameters")
 	}
 
 	// Check if a command with the same name is already defined.
 	if slices.ContainsFunc(c.commands, func(cmd *Command) bool {
 		return cmd.name == command.name
 	}) {
-		return false
+		return fmt.Errorf("command with name '%s' already exists", command.name)
 	}
 
 	c.commands = append(c.commands, command)
-	return true
+	return nil
 }
 
-// Cmd creates and adds a new command to the global register.
+// Cmd creates a new command and adds it as a subcommand.
 // When the command is added successfully, the Command value is returned.
-// Else nil is returned.
-func (c *Command) Cmd(name string, usage string, flags *flag.FlagSet) *Command {
+// Else nil and an error is returned.
+func (c *Command) Cmd(name string, usage string, flags *flag.FlagSet) (*Command, error) {
 	cmd := NewCommand(name, usage, flags)
-	if c.AddCommand(cmd) {
-		return cmd
-	} else {
-		return nil
+	if err := c.AddCommand(cmd); err != nil {
+		return nil, err
 	}
+	return cmd, nil
 }
 
+// SetDescription defines a long description that is
+// displayed on the generated help page. See CommandUsages.
 func (c *Command) SetDescription(description string) {
 	c.description = description
 }
 
+// MarkHidden sets the command to 'hidden'. It will continue to
+// function but will not show up in help or usage messages.
+func (c *Command) MarkHidden() {
+	c.hidden = true
+}
+
+// MarkDeprecated indicates that the command is deprecated. It will
+// continue to function but will not show up in help or usage messages.
+func (c *Command) MarkDeprecated() {
+	c.hidden = true
+	c.deprecated = true
+}
+
+// out returns the output stream defined for c or the global command,
+// or os.Stderr if both are undefined.
+func (c *Command) out() io.Writer {
+	if c.output != nil {
+		return c.output
+	} else if command.output != nil {
+		return command.output
+	} else {
+		return os.Stderr
+	}
+}
+
+// SetOutput sets the destination for usage and error messages.
+// If output is nil, os.Stderr is used.
+func (c *Command) SetOutput(output io.Writer) {
+	c.output = output
+}
+
+// IsActive reports whether the command is active,
+// i.e. it was supplied to the command line.
 func (c *Command) IsActive() bool {
 	return c.active
 }
 
-func (c *Command) FindActive(name string) *Command {
+// IsHidden reports whether the command is marked as hidden,
+// i.e. it is not listed in help and usage messages.
+func (c *Command) IsHidden() bool {
+	return c.hidden
+}
+
+// IsDeprecated reports whether the command is marked as deprecated,
+// i.e. it is not listed in help and usage messages and a warning is
+// displayed on its help message.
+func (c *Command) IsDeprecated() bool {
+	return c.deprecated
+}
+
+// GetName returns the command name.
+func (c *Command) GetName() string {
+	return c.name
+}
+
+// GetUsage returns the command usage.
+func (c *Command) GetUsage() string {
+	return c.usage
+}
+
+// GetDescription returns the command description if set.
+// See Command.SetDescription.
+func (c *Command) GetDescription() string {
+	return c.description
+}
+
+// Lookup searches for a registered subcommand by its name.
+// If no matching command is found, nil is returned.
+func (c *Command) Lookup(name string) *Command {
 	if len(name) == 0 {
-		return c
+		return nil
 	}
 
-	// Find active command with matching name.
+	// Find command with matching name.
 	if iCmd := slices.IndexFunc(c.commands, func(cmd *Command) bool {
-		return cmd.active && cmd.name == name
+		return cmd.name == name
 	}); iCmd >= 0 {
 		return c.commands[iCmd]
 	}
@@ -75,8 +165,71 @@ func (c *Command) FindActive(name string) *Command {
 	return nil
 }
 
+// Active searches for a registered subcommand by its name
+// and reports its activation state. See IsActive.
+func (c *Command) Active(name string) bool {
+	// Lookup command with matching name.
+	if cmd := c.Lookup(name); cmd != nil {
+		return cmd.IsActive()
+	}
+	return false
+}
+
+// CommandUsages returns a string containing the usage information
+// for all subcommands defined for this command.
 func (c *Command) CommandUsages() string {
+	if len(c.commands) == 0 {
+		return ""
+	}
+
 	buf := new(bytes.Buffer)
+
+	// Filter visible commands.
+	visibleCommands := filterSlice(c.commands, func(c *Command) bool {
+		return !c.hidden
+	})
+
+	// Find maximum name length to calculate gap width.
+	maxNameLen := 0
+	for _, cmd := range visibleCommands {
+		nameLen := len(cmd.name)
+		if nameLen > maxNameLen {
+			maxNameLen = nameLen
+		}
+	}
+
+	// Create line containing command name and usage.
+	for _, cmd := range visibleCommands {
+		nameLen := len(cmd.name)
+		gap := strings.Repeat(" ", commandGapLen)
+		usageGapLen := maxNameLen - nameLen + commandUsageGapLen
+		usageGap := strings.Repeat(" ", usageGapLen)
+		_, _ = fmt.Fprintln(buf, gap+cmd.name+usageGap+cmd.usage)
+	}
+
+	// Return usages string.
+	return buf.String()
+}
+
+// FlagUsages returns a string containing the usage information for all flags
+// defined for this command.
+func (c *Command) FlagUsages() string {
+	if c.flags == nil {
+		return ""
+	}
+	return c.flags.FlagUsages()
+}
+
+// CommandUsage returns a string containing the usage information
+// for this command and all subcommands, including the
+// description for this command if defined.
+func (c *Command) CommandUsage() string {
+	buf := new(bytes.Buffer)
+
+	// Add deprecated warning.
+	if c.deprecated {
+		_, _ = fmt.Fprintln(buf, "! DEPRECATED !")
+	}
 
 	// Add command usage.
 	if len(c.usage) > 0 {
@@ -88,139 +241,230 @@ func (c *Command) CommandUsages() string {
 		_, _ = fmt.Fprintln(buf, c.description)
 	}
 
-	// Add sub-command usages.
+	// Add subcommands.
 	if len(c.commands) > 0 {
 		_, _ = fmt.Fprintln(buf, "Commands:")
-
-		// Find maximum name length to calculate gap width.
-		maxNameLen := 0
-		for _, cmd := range c.commands {
-			nameLen := len(cmd.name)
-			if nameLen > maxNameLen {
-				maxNameLen = nameLen
-			}
-		}
-
-		// Create line containing command name and usage.
-		for _, cmd := range c.commands {
-			nameLen := len(cmd.name)
-			gapLen := maxNameLen - nameLen + 3
-			gap := strings.Repeat(" ", gapLen)
-			_, _ = fmt.Fprintln(buf, "  "+cmd.name+gap+cmd.usage)
-		}
+		_, _ = fmt.Fprint(buf, c.CommandUsages())
 	}
 
 	// Add flag usages.
 	if c.flags.HasAvailableFlags() {
 		_, _ = fmt.Fprintln(buf, "Flags:")
-		_, _ = fmt.Fprint(buf, c.flags.FlagUsages())
+		_, _ = fmt.Fprint(buf, c.FlagUsages())
 	}
 
-	//return usages
 	return buf.String()
 }
 
+// Parse parses the command line arguments respecting the defined
+// command structure. Arguments for each command are parsed using pflag.
 func (c *Command) Parse(arguments []string) {
 	if len(arguments) == 0 {
 		return
 	}
 
-	var argsBeforeCmd []string
-	var argsAfterCmd []string
-	var cmd *Command
+	var argsBeforeSubCmd []string
+	var argsAfterSubCmd []string
+	cmd := c
+	var subCmd *Command
 
-	// Search matching sub-command in arguments.
-	if len(c.commands) > 0 {
-		for iArg, arg := range arguments {
-			if iCmd := slices.IndexFunc(c.commands, func(cmd *Command) bool {
-				return cmd.name == arg
-			}); iCmd >= 0 {
-				// Cache arguments before and after command.
-				cmd = c.commands[iCmd]
-				argsBeforeCmd = arguments[:iArg]
-				argsAfterCmd = arguments[iArg+1:]
-				break
+	// Check if the command name is empty (top-level command)
+	// or matches the first argument (subcommand).
+	if c.name != "" && arguments[0] != c.name {
+		return
+	}
+
+	// Mark command as active and remove first argument.
+	c.active = true
+	arguments = arguments[1:]
+
+	// Parse arguments and handle all commands and flags.
+	for cmd != nil {
+		// Search matching subcommand in arguments.
+		if len(cmd.commands) > 0 {
+			for iArg, arg := range arguments {
+				if iCmd := slices.IndexFunc(cmd.commands, func(cmd *Command) bool {
+					return cmd.name == arg
+				}); iCmd >= 0 {
+					// Cache arguments before and after command.
+					subCmd = cmd.commands[iCmd]
+					argsBeforeSubCmd = arguments[:iArg]
+					argsAfterSubCmd = arguments[iArg:]
+					break
+				}
 			}
 		}
-	}
 
-	// Use all arguments when no sub-command is found.
-	if cmd == nil {
-		argsBeforeCmd = arguments
-	}
-
-	// Parse arguments for this command.
-	if c.flags != nil && len(argsBeforeCmd) > 0 {
-		// Add help option when none is set.
-		paramHelp := new(bool)
-		*paramHelp = false
-		if _, err := c.flags.GetBool("help"); err != nil {
-			paramHelp = c.flags.BoolP("help", "h", false, "Display help.")
+		// Use all arguments when no subcommand is found.
+		if subCmd == nil {
+			argsBeforeSubCmd = arguments
 		}
 
-		// Parse command.
-		_ = c.flags.Parse(argsBeforeCmd)
+		// Parse arguments for this command.
+		if cmd.flags != nil && len(argsBeforeSubCmd) > 0 {
+			// Add help option when none is set.
+			if _, err := cmd.flags.GetBool("help"); err != nil {
+				cmd.flags.BoolP("help", "h", false, "Display help.")
+			}
 
-		// Print help and exit when help option is set.
-		if *paramHelp {
-			print(c.CommandUsages())
-			os.Exit(0)
+			// Parse command arguments.
+			_ = cmd.flags.Parse(argsBeforeSubCmd)
+
+			// Print help and exit when help option is set.
+			if paramHelp, err := cmd.flags.GetBool("help"); err == nil && paramHelp {
+				usage(cmd)
+				os.Exit(0)
+			} else if cmd.deprecated {
+				// Print deprecated warning.
+				_, _ = fmt.Fprintln(cmd.out(), fmt.Sprintf("Command %q is deprecated!", cmd.name))
+			}
 		}
-	}
 
-	// Parse sub-command.
-	if cmd != nil {
-		cmd.active = true
-		cmd.Parse(argsAfterCmd)
+		// Parse subcommand.
+		if subCmd != nil {
+			// Use subcommand for next parsing loop.
+			cmd = subCmd
+			subCmd = nil
+			cmd.active = true
+			arguments = argsAfterSubCmd
+			argsBeforeSubCmd = nil
+			argsAfterSubCmd = nil
+		} else {
+			// No subcommand found. Exit loop.
+			cmd = nil
+		}
 	}
 }
 
+// NewFlagSet creates a flag.FlagSet with ParseErrorsWhitelist.UnknownFlags enabled,
+// which is required to process subcommands.
+func NewFlagSet(name string, errorHandling flag.ErrorHandling) *flag.FlagSet {
+	flagSet := flag.NewFlagSet(name, errorHandling)
+	flagSet.ParseErrorsWhitelist.UnknownFlags = true
+	return flagSet
+}
+
+// NewCommand creates a new Command object for use with AddCommand.
+// A top-level command must have an empty name.
+// Use flag.NewFlagSet to create the flag.FlagSet.
 func NewCommand(name string, usage string, flags *flag.FlagSet) *Command {
 	return &Command{
-		name:     name,
-		usage:    usage,
-		flags:    flags,
-		commands: nil,
-		active:   false,
+		name:  name,
+		usage: usage,
+		flags: flags,
 	}
 }
 
-func AddCommand(command *Command) bool {
+// AddCommand adds command to the global register.
+// When a command with the same name already exists,
+// the operation is cancelled and an error is returned.
+func AddCommand(command *Command) error {
 	return command.AddCommand(command)
 }
 
-func Cmd(name string, usage string, flags *flag.FlagSet) *Command {
+// Cmd creates and adds a new command to the global register.
+// When the command is added successfully, the Command value is returned.
+// Else nil and an error is returned.
+func Cmd(name string, usage string, flags *flag.FlagSet) (*Command, error) {
 	return command.Cmd(name, usage, flags)
 }
 
+// SetDescription defines a long description that is
+// displayed on the generated help page. See CommandUsages.
 func SetDescription(description string) {
 	command.SetDescription(description)
 }
 
+// SetOutput sets the destination for usage and error messages.
+// If output is nil, os.Stderr is used.
+func SetOutput(output io.Writer) {
+	command.output = output
+}
+
+// IsActive reports whether the command is active,
+// meaning it was supplied to the command line.
 func IsActive() bool {
 	return command.IsActive()
 }
 
-func FindActive(name string) *Command {
-	return command.FindActive(name)
+// GetDescription returns the application description if set.
+// See SetDescription.
+func GetDescription() string {
+	return command.GetDescription()
 }
 
+// Lookup searches for a registered command by its name.
+// If no matching command is found, nil is returned.
+func Lookup(name string) *Command {
+	return command.Lookup(name)
+}
+
+// Active searches for a registered command by its name
+// and reports its activation state. See IsActive.
+func Active(name string) bool {
+	return command.Active(name)
+}
+
+// CommandUsages returns a string containing the usage information
+// for the application and all commands, including the
+// application description if defined.
 func CommandUsages() string {
 	return command.CommandUsages()
 }
 
-func Parse(arguments []string, flags *flag.FlagSet) {
-	command.flags = flags
-	command.active = true
-	command.Parse(arguments[1:])
+// FlagUsages returns a string containing the usage information for all flags
+// defined for this command.
+func FlagUsages() string {
+	return command.FlagUsages()
 }
 
-func Reset() {
-	command = Command{
-		name:     "",
-		usage:    "",
-		flags:    nil,
-		commands: nil,
-		active:   false,
+// CommandUsage returns a string containing the usage information
+// for this command and all subcommands, including the
+// description for this command if defined.
+func CommandUsage() string {
+	return command.CommandUsage()
+}
+
+// PrintDefaults prints, to standard error unless configured
+// otherwise, the default values of all defined flags in the set.
+// defaultUsage is the default function to print a usage message.
+func defaultUsage(c *Command) {
+	_, _ = fmt.Fprint(c.out(), c.CommandUsage())
+}
+
+// Usage prints to standard error a usage message documenting all defined subcommands and command-line flags.
+// The function is a variable that may be changed to point to a custom function.
+// By default, it prints the output of CommandUsage which is roughly equivalent to
+// fmt.Printf("%s\n%s\nCommands:\n%sFlags:\n%s", c.GetUsage(), c.GetDescription(), c.CommandUsages(), c.FlagUsages())
+var Usage = defaultUsage
+
+// usage calls the Usage method for the flag set, or the usage function if
+// the flag set is CommandLine.
+func usage(c *Command) {
+	if c == nil {
+		return
 	}
+
+	if c.Usage != nil {
+		c.Usage(c)
+	} else if Usage != nil {
+		Usage(c)
+	} else {
+		defaultUsage(c)
+	}
+}
+
+// Parse parses the application command line arguments respecting the
+// defined global command structure. Arguments for each command are parsed
+// using pflag. The first argument is expected to be the application path.
+// Use flag.NewFlagSet to create the flag.FlagSet for parsing top-level application flags.
+func Parse(arguments []string, flags *flag.FlagSet) {
+	command.flags = flags
+	command.Parse(arguments)
+}
+
+// Reset resets the global register.
+func Reset() {
+	command = Command{}
+	Usage = defaultUsage
 }
