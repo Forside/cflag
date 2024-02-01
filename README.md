@@ -102,7 +102,7 @@ func main() {
     cmdFooBar, _ := cmdFoo.Cmd("bar", "Bar command", flagsFooBar)
     
     // Parse arguments and print values.
-    cflag.Parse(os.Args, flags)
+	cflag.Parse(os.Args, flags)
     fmt.Printf("version flag: %t\n", *paramVersion)
     fmt.Printf("foo command supplied: %t\n", cmdFoo.IsActive())
     fmt.Printf("foo/bar command supplied: %t\n", cmdFooBar.IsActive())
@@ -128,7 +128,7 @@ For more examples check [cflag_test.go](./cflag_test.go).
 cflag can be used standalone without using global values. While parsing the arguments, a command expects its name to be either empty or equal `args[0]`. This means the name of the top-level command must be either empty or `args[0]`. 
 
 ```go
-// Define flags.
+// Define top-level flags.
 flags := NewFlagSet("", flag.ExitOnError)
 flags.SortFlags = false
 paramTest := flags.Int("test", 0, "Test.")
@@ -140,6 +140,47 @@ cmd := NewCommand("", "Test.", flags)
 cmd.Parse(os.Args)
 fmt.Printf("Test: %t %d\n", flags.Changed("test"), *paramTest)
 ```
+
+### Help page
+
+cflag automatically generates help pages for all commands. It can be accessed by supplying `-h, --help` to a command. To add a description to your command, use `SetDescription()`.
+
+```go
+// Define top-level flags.
+flags := cflag.NewFlagSet("", flag.ExitOnError)
+flags.SortFlags = false
+paramVersion := flags.BoolP("version", "v", false, "Display the application version.")
+
+// Define foo command.
+flagsFoo := cflag.NewFlagSet("", flag.ExitOnError)
+flagsFoo.SortFlags = false
+paramFooTest1 := flagsFoo.Int("test1", 1, "Test 1.")
+cmdFoo, _ := cflag.Cmd("foo", "Foo command.", flagsFoo)
+
+// Parse arguments and print values.
+cflag.SetDescription("cflag test application.")
+cflag.Parse(os.Args, flags)
+```
+
+```shellsession
+$ ./main -h
+cflag test application.
+Commands:
+  foo   Foo command.
+Flags:
+  -v, --version   Display the application version.
+  -h, --help      Display help.
+```
+
+```shellsession
+$ ./main foo -h
+Foo command.
+Flags:
+      --test1 int   Test 1. (default 1)
+  -h, --help        Display help.
+```
+
+See `TestHelp`, `TestHidden` and `TestDeprecated` in [cflag_test.go](./cflag_test.go). for more options.
 
 ## Development
 

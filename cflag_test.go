@@ -40,7 +40,7 @@ type outputCaptureContext struct {
 
 // startCaptureOutput redirects stdout and stderr to capture any output written afterwards.
 // Returns a capture context or nil and an error.
-func startCaptureOutput() (*outputCaptureContext, error) {
+func startCaptureOutput(includeStdout, includeStderr bool) (*outputCaptureContext, error) {
 	ctx := new(outputCaptureContext)
 	var err error
 
@@ -53,8 +53,12 @@ func startCaptureOutput() (*outputCaptureContext, error) {
 	}
 
 	// Redirect stdout and call function.
-	os.Stdout = ctx.w
-	os.Stderr = ctx.w
+	if includeStdout {
+		os.Stdout = ctx.w
+	}
+	if includeStderr {
+		os.Stderr = ctx.w
+	}
 
 	return ctx, nil
 }
@@ -79,7 +83,7 @@ func (ctx *outputCaptureContext) stopCaptureOutput() (string, error) {
 
 // captureOutput runs f and captures any output to stdout and stderr.
 // Returns the output and the error returned by f.
-func captureOutput(f func() error) (string, error) {
+func captureOutput(includeStdout, includeStderr bool, f func() error) (string, error) {
 	// Create pipe to transfer output.
 	outOrig := os.Stdout
 	errOrig := os.Stderr
@@ -89,8 +93,12 @@ func captureOutput(f func() error) (string, error) {
 	}
 
 	// Redirect stdout and call function.
-	os.Stdout = w
-	os.Stderr = w
+	if includeStdout {
+		os.Stdout = w
+	}
+	if includeStderr {
+		os.Stderr = w
+	}
 	err = f()
 	os.Stdout = outOrig
 	os.Stderr = errOrig
@@ -104,7 +112,7 @@ func captureOutput(f func() error) (string, error) {
 
 // captureOutput runs f and captures any output to stdout and stderr using a channel.
 // Returns the output and the error returned by f.
-func captureOutputC(f func() error) (string, error) {
+func captureOutputC(includeStdout, includeStderr bool, f func() error) (string, error) {
 	// Create pipe to transfer output.
 	outOrig := os.Stdout
 	errOrig := os.Stderr
@@ -125,8 +133,12 @@ func captureOutputC(f func() error) (string, error) {
 	}()
 
 	// Redirect stdout and call function.
-	os.Stdout = w
-	os.Stderr = w
+	if includeStdout {
+		os.Stdout = w
+	}
+	if includeStderr {
+		os.Stderr = w
+	}
 	err = f()
 	os.Stdout = outOrig
 	os.Stderr = errOrig
@@ -256,7 +268,7 @@ func TestVersion(t *testing.T) {
 	os.Args = slices.Insert(os.Args, 1, "--version")
 
 	// Capture output from function.
-	output, err := captureOutput(func() error {
+	output, err := captureOutput(true, true, func() error {
 		// Run TestParse which checks for --version flag.
 		TestParse(t)
 		return nil
@@ -321,12 +333,6 @@ func TestHelp(t *testing.T) {
 
 	var capCtx *outputCaptureContext
 
-	// Define custom Usage function which is called automatically
-	// during parsing when -h, --help is found.
-	Usage = func(c *Command) {
-		fmt.Printf("%s\n%s\nCommands:\n%sFlags:\n%s", c.GetUsage(), c.GetDescription(), c.CommandUsages(), c.FlagUsages())
-	}
-
 	// The test framework panics when os.Exit() is called.
 	// Use recover to catch this after the help is printed.
 	defer func() {
@@ -345,31 +351,59 @@ func TestHelp(t *testing.T) {
 	}()
 
 	// Capture output to stdout and stderr.
-	capCtx, err := startCaptureOutput()
+	capCtx, err := startCaptureOutput(true, true)
 	a.NoError(err)
 
 	// Run cflag parser.
 	Parse(ctx.arguments, ctx.flags)
+}
 
-	// Code from here on does not execute.
-	// Instead, test execution jumps to the deferred function above
-	// when os.Exit(0) is called inside cflag.
+func TestCommandHelp(t *testing.T) {
+	a := assert.New(t)
+	ctx := buildTestContext()
 
-	// Receive captured output.
-	output, err := capCtx.stopCaptureOutput()
+	// Setup test arguments.
+	ctx.arguments = slices.Insert(ctx.arguments, 1, "foo", "--help")
 
+	var capCtx *outputCaptureContext
+
+	// Define optional custom Usage function which is called automatically
+	// during parsing when -h, --help is found.
+	// The logic here roughly equals the default help message.
+	Usage = func(c *Command) {
+		fmt.Printf("%s\n%s\nCommands:\n%sFlags:\n%s", c.GetUsage(), c.GetDescription(), c.CommandUsages(), c.FlagUsages())
+	}
+
+	// The test framework panics when os.Exit() is called.
+	// Use recover to catch this after the help is printed.
+	defer func() {
+		if r := recover(); r != nil {
+			a.Contains(r, "os.Exit(0)")
+
+			// Receive captured output.
+			a.NotNil(capCtx)
+			output, err := capCtx.stopCaptureOutput()
+			a.NoError(err)
+			t.Log(output)
+
+			// Check output for help string.
+			a.Contains(output, "Foo command.")
+		}
+	}()
+
+	// Capture output to stdout and stderr.
+	capCtx, err := startCaptureOutput(true, true)
 	a.NoError(err)
-	t.Log(output)
 
-	// Check output for help string.
-	a.Contains(output, "cflag test application.")
+	// Run cflag parser.
+	Parse(ctx.arguments, ctx.flags)
 }
 
 func TestHidden(t *testing.T) {
 	a := assert.New(t)
 	ctx := buildTestContext()
 
-	// Mark the command as hidden.
+	// Mark the 'world' command as hidden.
 	ctx.cmdWorld.MarkHidden()
 
 	// Setup test arguments.
@@ -397,7 +431,7 @@ func TestHidden(t *testing.T) {
 	}()
 
 	// Capture output to stdout and stderr.
-	capCtx, err := startCaptureOutput()
+	capCtx, err := startCaptureOutput(true, true)
 	a.NoError(err)
 
 	// Run cflag parser.
@@ -436,7 +470,7 @@ func TestDeprecated(t *testing.T) {
 	}()
 
 	// Capture output to stdout and stderr.
-	capCtx, err := startCaptureOutput()
+	capCtx, err := startCaptureOutput(true, true)
 	a.NoError(err)
 
 	// Run cflag parser.
@@ -456,7 +490,7 @@ func TestDeprecatedUse(t *testing.T) {
 	)
 
 	// Capture output from function.
-	output, err := captureOutput(func() error {
+	output, err := captureOutput(true, true, func() error {
 		// Run cflag parser.
 		Parse(ctx.arguments, ctx.flags)
 		return nil
@@ -474,6 +508,44 @@ func TestDeprecatedUse(t *testing.T) {
 	a.Contains(output, "deprecated")
 
 	t.Log(output)
+}
+
+func TestRedirectOutput(t *testing.T) {
+	a := assert.New(t)
+	ctx := buildTestContext()
+
+	// Setup test arguments.
+	ctx.arguments = slices.Insert(ctx.arguments, 1, "--help")
+
+	var capCtx *outputCaptureContext
+
+	// The test framework panics when os.Exit() is called.
+	// Use recover to catch this after the help is printed.
+	defer func() {
+		if r := recover(); r != nil {
+			a.Contains(r, "os.Exit(0)")
+
+			// Receive captured output.
+			a.NotNil(capCtx)
+			output, err := capCtx.stopCaptureOutput()
+			a.NoError(err)
+			t.Log(output)
+
+			// Check output for help string.
+			a.Contains(output, "cflag test application.")
+		}
+	}()
+
+	// Capture output to stdout only.
+	capCtx, err := startCaptureOutput(true, false)
+	a.NoError(err)
+
+	// cflag by default prints to stderr.
+	// Set stdout as the output to test redirection.
+	SetOutput(os.Stdout)
+
+	// Run cflag parser.
+	Parse(ctx.arguments, ctx.flags)
 }
 
 func TestStandalone(t *testing.T) {
