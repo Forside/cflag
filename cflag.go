@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	flag "github.com/spf13/pflag"
+	"golang.org/x/term"
 	"io"
 	"os"
 	"slices"
@@ -34,17 +35,6 @@ const commandUsageGapLen = 3
 // Holds the global command register,
 // i.e. top-level flags and commands defined for the application.
 var command Command
-
-// filterSlice filters out all elements where test returns false.
-func filterSlice[T any](slice []T, test func(T) bool) []T {
-	var res []T
-	for _, s := range slice {
-		if test(s) {
-			res = append(res, s)
-		}
-	}
-	return res
-}
 
 // AddCommand adds command as a subcommand.
 // When a command with the same name already exists,
@@ -95,18 +85,6 @@ func (c *Command) MarkDeprecated() {
 	c.deprecated = true
 }
 
-// out returns the output stream defined for c or the global command,
-// or os.Stderr if both are undefined.
-func (c *Command) out() io.Writer {
-	if c.output != nil {
-		return c.output
-	} else if command.output != nil {
-		return command.output
-	} else {
-		return os.Stderr
-	}
-}
-
 // SetOutput sets the destination for usage and error messages.
 // If output is nil, os.Stderr is used.
 func (c *Command) SetOutput(output io.Writer) {
@@ -114,7 +92,7 @@ func (c *Command) SetOutput(output io.Writer) {
 }
 
 // IsActive reports whether the command is active,
-// i.e. it was supplied to the command line.
+// i.e. it was supplied to the command line when calling Parse.
 func (c *Command) IsActive() bool {
 	return c.active
 }
@@ -175,9 +153,10 @@ func (c *Command) Active(name string) bool {
 	return false
 }
 
-// CommandUsages returns a string containing the usage information
+// CommandUsagesWrapped returns a string containing the usage information
 // for all subcommands defined for this command.
-func (c *Command) CommandUsages() string {
+// Wrapped to cols columns (0 for no wrapping).
+func (c *Command) CommandUsagesWrapped(cols int) string {
 	if len(c.commands) == 0 {
 		return ""
 	}
@@ -198,26 +177,43 @@ func (c *Command) CommandUsages() string {
 		}
 	}
 
+	// Get the full gap until usages are printed for wrapping.
+	fullUsageGapLen := commandGapLen + maxNameLen + commandUsageGapLen
+
 	// Create line containing command name and usage.
 	for _, cmd := range visibleCommands {
 		nameLen := len(cmd.name)
 		gap := strings.Repeat(" ", commandGapLen)
 		usageGapLen := maxNameLen - nameLen + commandUsageGapLen
 		usageGap := strings.Repeat(" ", usageGapLen)
-		_, _ = fmt.Fprintln(buf, gap+cmd.name+usageGap+cmd.usage)
+		cmdUsage := wrap(fullUsageGapLen, cols, cmd.usage)
+		_, _ = fmt.Fprintln(buf, gap+cmd.name+usageGap+cmdUsage)
 	}
 
 	// Return usages string.
 	return buf.String()
 }
 
-// FlagUsages returns a string containing the usage information for all flags
-// defined for this command.
-func (c *Command) FlagUsages() string {
+// CommandUsages returns a string containing the usage information
+// for all subcommands defined for this command.
+func (c *Command) CommandUsages() string {
+	return c.CommandUsagesWrapped(0)
+}
+
+// FlagUsagesWrapped returns a string containing the usage information
+// for all flags defined for this command.
+// Wrapped to cols columns (0 for no wrapping).
+func (c *Command) FlagUsagesWrapped(cols int) string {
 	if c.flags == nil {
 		return ""
 	}
-	return c.flags.FlagUsages()
+	return c.flags.FlagUsagesWrapped(cols)
+}
+
+// FlagUsages returns a string containing the usage information for all flags
+// defined for this command.
+func (c *Command) FlagUsages() string {
+	return c.FlagUsagesWrapped(0)
 }
 
 // CommandUsage returns a string containing the usage information
@@ -241,16 +237,19 @@ func (c *Command) CommandUsage() string {
 		_, _ = fmt.Fprintln(buf, c.description)
 	}
 
+	// Get terminal width to wrap subcommand and flag usages.
+	termWidth, _, _ := getTermSize()
+
 	// Add subcommands.
 	if len(c.commands) > 0 {
 		_, _ = fmt.Fprintln(buf, "Commands:")
-		_, _ = fmt.Fprint(buf, c.CommandUsages())
+		_, _ = fmt.Fprint(buf, c.CommandUsagesWrapped(termWidth))
 	}
 
 	// Add flag usages.
 	if c.flags.HasAvailableFlags() {
 		_, _ = fmt.Fprintln(buf, "Flags:")
-		_, _ = fmt.Fprint(buf, c.FlagUsages())
+		_, _ = fmt.Fprint(buf, c.FlagUsagesWrapped(termWidth))
 	}
 
 	return buf.String()
@@ -270,7 +269,7 @@ func (c *Command) Parse(arguments []string) {
 
 	// Check if the command name is empty (top-level command)
 	// or matches the first argument (subcommand).
-	if c.name != "" && arguments[0] != c.name {
+	if c.name != "" && c.name != arguments[0] {
 		return
 	}
 
@@ -336,6 +335,18 @@ func (c *Command) Parse(arguments []string) {
 	}
 }
 
+// out returns the output stream defined for c or the global command,
+// or os.Stderr if both are undefined.
+func (c *Command) out() io.Writer {
+	if c.output != nil {
+		return c.output
+	} else if command.output != nil {
+		return command.output
+	} else {
+		return os.Stderr
+	}
+}
+
 // NewFlagSet creates a flag.FlagSet with ParseErrorsWhitelist.UnknownFlags enabled,
 // which is required to process subcommands.
 func NewFlagSet(name string, errorHandling flag.ErrorHandling) *flag.FlagSet {
@@ -381,8 +392,7 @@ func SetOutput(output io.Writer) {
 	command.output = output
 }
 
-// IsActive reports whether the command is active,
-// meaning it was supplied to the command line.
+// IsActive reports whether the global command is active, i.e. Parse has been called.
 func IsActive() bool {
 	return command.IsActive()
 }
@@ -405,22 +415,28 @@ func Active(name string) bool {
 	return command.Active(name)
 }
 
+// CommandUsagesWrapped returns a string containing the usage information
+// for all subcommands defined for this command.
+// Wrapped to cols columns (0 for no wrapping).
+func CommandUsagesWrapped(cols int) string {
+	return command.CommandUsagesWrapped(cols)
+}
+
 // CommandUsages returns a string containing the usage information
-// for the application and all commands, including the
-// application description if defined.
+// for all commands defined for the application.
 func CommandUsages() string {
 	return command.CommandUsages()
 }
 
-// FlagUsages returns a string containing the usage information for all flags
-// defined for this command.
+// FlagUsages returns a string containing the usage information
+// for all flags defined for this command.
 func FlagUsages() string {
 	return command.FlagUsages()
 }
 
 // CommandUsage returns a string containing the usage information
-// for this command and all subcommands, including the
-// description for this command if defined.
+// for the application and all commands, including the
+// application description if defined.
 func CommandUsage() string {
 	return command.CommandUsage()
 }
@@ -467,4 +483,126 @@ func Parse(arguments []string, flags *flag.FlagSet) {
 func Reset() {
 	command = Command{}
 	Usage = defaultUsage
+}
+
+// filterSlice filters out all elements where test returns false.
+func filterSlice[T any](slice []T, test func(T) bool) []T {
+	var res []T
+	for _, s := range slice {
+		if test(s) {
+			res = append(res, s)
+		}
+	}
+	return res
+}
+
+// getTermSize determines the dimensions of the active terminal.
+func getTermSize() (int, int, error) {
+	fd := int(os.Stdout.Fd())
+	width, height, err := term.GetSize(fd)
+	if err != nil {
+		return 0, 0, err
+	}
+	return width, height, nil
+}
+
+/**
+Wrap functions are copied from github.com/spf13/pflag.
+
+Copyright (c) 2012 Alex Ogier. All rights reserved.
+Copyright (c) 2012 The Go Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
+// Splits the string `s` on whitespace into an initial substring up to
+// `i` runes in length and the remainder. Will go `slop` over `i` if
+// that encompasses the entire string (which allows the caller to
+// avoid short orphan words on the final line).
+func wrapN(i, slop int, s string) (string, string) {
+	if i+slop > len(s) {
+		return s, ""
+	}
+
+	w := strings.LastIndexAny(s[:i], " \t\n")
+	if w <= 0 {
+		return s, ""
+	}
+	nlPos := strings.LastIndex(s[:i], "\n")
+	if nlPos > 0 && nlPos < w {
+		return s[:nlPos], s[nlPos+1:]
+	}
+	return s[:w], s[w+1:]
+}
+
+// Wraps the string `s` to a maximum width `w` with leading indent
+// `i`. The first line is not indented (this is assumed to be done by
+// caller). Pass `w` == 0 to do no wrapping
+func wrap(i, w int, s string) string {
+	if w == 0 {
+		return strings.Replace(s, "\n", "\n"+strings.Repeat(" ", i), -1)
+	}
+
+	// space between indent i and end of line width w into which
+	// we should wrap the text.
+	wrap := w - i
+
+	var r, l string
+
+	// Not enough space for sensible wrapping. Wrap as a block on
+	// the next line instead.
+	if wrap < 24 {
+		i = 16
+		wrap = w - i
+		r += "\n" + strings.Repeat(" ", i)
+	}
+	// If still not enough space then don't even try to wrap.
+	if wrap < 24 {
+		return strings.Replace(s, "\n", r, -1)
+	}
+
+	// Try to avoid short orphan words on the final line, by
+	// allowing wrapN to go a bit over if that would fit in the
+	// remainder of the line.
+	slop := 5
+	wrap = wrap - slop
+
+	// Handle first line, which is indented by the caller (or the
+	// special case above)
+	l, s = wrapN(wrap, slop, s)
+	r = r + strings.Replace(l, "\n", "\n"+strings.Repeat(" ", i), -1)
+
+	// Now wrap the rest
+	for s != "" {
+		var t string
+
+		t, s = wrapN(wrap, slop, s)
+		r = r + "\n" + strings.Repeat(" ", i) + strings.Replace(t, "\n", "\n"+strings.Repeat(" ", i), -1)
+	}
+
+	return r
 }

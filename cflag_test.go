@@ -1,7 +1,6 @@
 package cflag
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -108,46 +107,6 @@ func captureOutput(includeStdout, includeStderr bool, f func() error) (string, e
 	output, _ := io.ReadAll(r)
 
 	return string(output), err
-}
-
-// captureOutput runs f and captures any output to stdout and stderr using a channel.
-// Returns the output and the error returned by f.
-func captureOutputC(includeStdout, includeStderr bool, f func() error) (string, error) {
-	// Create pipe to transfer output.
-	outOrig := os.Stdout
-	errOrig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		return "", err
-	}
-
-	// Create channel to transfer pipe traffic.
-	outC := make(chan string)
-	// Create subroutine that listens on channel traffic.
-	go func() {
-		var buf bytes.Buffer
-		if _, err := io.Copy(&buf, r); err != nil {
-			return
-		}
-		outC <- buf.String()
-	}()
-
-	// Redirect stdout and call function.
-	if includeStdout {
-		os.Stdout = w
-	}
-	if includeStderr {
-		os.Stderr = w
-	}
-	err = f()
-	os.Stdout = outOrig
-	os.Stderr = errOrig
-
-	// Close pipe and read output from channel.
-	_ = w.Close()
-	output := <-outC
-
-	return output, err
 }
 
 // buildTestContext defines some flags and commands used by test functions.

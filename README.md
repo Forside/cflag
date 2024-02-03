@@ -88,21 +88,21 @@ func main() {
     flags := cflag.NewFlagSet("", flag.ExitOnError)
     flags.SortFlags = false
     paramVersion := flags.BoolP("version", "v", false, "Display the application version.")
-    
+
     // Define foo command.
     flagsFoo := cflag.NewFlagSet("", flag.ExitOnError)
     flagsFoo.SortFlags = false
     paramFooTest1 := flagsFoo.Int("test1", 1, "Test 1.")
     cmdFoo, _ := cflag.Cmd("foo", "Foo command.", flagsFoo)
-    
+
     // Define foo/bar command.
     flagsFooBar := cflag.NewFlagSet("", flag.ExitOnError)
     paramFooBarTest2 := flagsFooBar.Int("test2", 2, "Test 2.")
     flagsFooBar.SortFlags = false
     cmdFooBar, _ := cmdFoo.Cmd("bar", "Bar command", flagsFooBar)
-    
+
     // Parse arguments and print values.
-	cflag.Parse(os.Args, flags)
+    cflag.Parse(os.Args, flags)
     fmt.Printf("version flag: %t\n", *paramVersion)
     fmt.Printf("foo command supplied: %t\n", cmdFoo.IsActive())
     fmt.Printf("foo/bar command supplied: %t\n", cmdFooBar.IsActive())
@@ -157,7 +157,7 @@ flagsFoo.SortFlags = false
 paramFooTest1 := flagsFoo.Int("test1", 1, "Test 1.")
 cmdFoo, _ := cflag.Cmd("foo", "Foo command.", flagsFoo)
 
-// Parse arguments and print values.
+// Parse arguments.
 cflag.SetDescription("cflag test application.")
 cflag.Parse(os.Args, flags)
 ```
@@ -180,7 +180,7 @@ Flags:
   -h, --help        Display help.
 ```
 
-See `TestHelp`, `TestHidden` and `TestDeprecated` in [cflag_test.go](./cflag_test.go). for more options.
+See `TestHelp`, `TestHidden` and `TestDeprecated` in [cflag_test.go](./cflag_test.go) for more options.
 
 ## Development
 
