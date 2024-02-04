@@ -280,7 +280,7 @@ func (c *Command) Parse(arguments []string) {
 	// Parse arguments and handle all commands and flags.
 	for cmd != nil {
 		// Search matching subcommand in arguments.
-		if len(cmd.commands) > 0 {
+		if len(cmd.commands) > 0 && len(arguments) > 0 {
 			for iArg, arg := range arguments {
 				if iCmd := slices.IndexFunc(cmd.commands, func(cmd *Command) bool {
 					return cmd.name == arg
@@ -288,7 +288,7 @@ func (c *Command) Parse(arguments []string) {
 					// Cache arguments before and after command.
 					subCmd = cmd.commands[iCmd]
 					argsBeforeSubCmd = arguments[:iArg]
-					argsAfterSubCmd = arguments[iArg:]
+					argsAfterSubCmd = arguments[iArg+1:]
 					break
 				}
 			}
