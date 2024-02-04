@@ -299,24 +299,26 @@ func (c *Command) Parse(arguments []string) {
 			argsBeforeSubCmd = arguments
 		}
 
-		// Parse arguments for this command.
-		if cmd.flags != nil && len(argsBeforeSubCmd) > 0 {
-			// Add help option when none is set.
-			if _, err := cmd.flags.GetBool("help"); err != nil {
-				cmd.flags.BoolP("help", "h", false, "Display help.")
-			}
+		// Create flag set if unset.
+		if cmd.flags == nil {
+			cmd.flags = NewFlagSet("", flag.ExitOnError)
+		}
 
-			// Parse command arguments.
-			_ = cmd.flags.Parse(argsBeforeSubCmd)
+		// Add help flag if unset.
+		if _, err := cmd.flags.GetBool("help"); err != nil {
+			cmd.flags.BoolP("help", "h", false, "Display help.")
+		}
 
-			// Print help and exit when help option is set.
-			if paramHelp, err := cmd.flags.GetBool("help"); err == nil && paramHelp {
-				usage(cmd)
-				os.Exit(0)
-			} else if cmd.deprecated {
-				// Print deprecated warning.
-				_, _ = fmt.Fprintln(cmd.out(), fmt.Sprintf("Command %q is deprecated!", cmd.name))
-			}
+		// Parse command arguments.
+		_ = cmd.flags.Parse(argsBeforeSubCmd)
+
+		// Print help and exit when help flag is set.
+		if paramHelp, err := cmd.flags.GetBool("help"); err == nil && paramHelp {
+			usage(cmd)
+			os.Exit(0)
+		} else if cmd.deprecated {
+			// Print deprecated warning.
+			_, _ = fmt.Fprintln(cmd.out(), fmt.Sprintf("Command %q is deprecated!", cmd.name))
 		}
 
 		// Parse subcommand.
