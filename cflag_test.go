@@ -329,9 +329,9 @@ func TestCommandHelp(t *testing.T) {
 	// Define optional custom Usage function which is called automatically
 	// during parsing when -h, --help is found.
 	// The logic here roughly equals the default help message.
-	Usage = func(c *Command) {
+	SetUsageFunc(func(c *Command) {
 		fmt.Printf("%s\n%s\nCommands:\n%sFlags:\n%s", c.GetUsage(), c.GetDescription(), c.CommandUsages(), c.FlagUsages())
-	}
+	})
 
 	// The test framework panics when os.Exit() is called.
 	// Use recover to catch this after the help is printed.
@@ -507,6 +507,34 @@ func TestRedirectOutput(t *testing.T) {
 	Parse(ctx.arguments, ctx.flags)
 }
 
+func TestCallback(t *testing.T) {
+	a := assert.New(t)
+
+	cb := func(command *Command, flags *flag.FlagSet) {
+		// Print flag.
+		paramTest, _ := flags.GetInt("test")
+		t.Logf("Test: %t %d\n", flags.Changed("test"), paramTest)
+
+		// Check parsed value.
+		a.Equal(1, paramTest)
+	}
+
+	// Setup test arguments.
+	args := slices.Clone(os.Args)
+	args = append(args, "--test", "1")
+
+	// Define flags.
+	flags := NewFlagSet("", flag.ExitOnError)
+	flags.SortFlags = false
+	_ = flags.Int("test", 0, "Test.")
+
+	// Set global command callback.
+	SetCallback(cb)
+
+	// Run cflag parser.
+	Parse(args, flags)
+}
+
 func TestStandalone(t *testing.T) {
 	a := assert.New(t)
 
@@ -525,6 +553,7 @@ func TestStandalone(t *testing.T) {
 	// Run cflag parser.
 	cmd.Parse(args)
 
+	// Print flag.
 	t.Logf("Test: %t %d\n", flags.Changed("test"), *paramTest)
 
 	// Check parsed value.

@@ -123,6 +123,31 @@ test2 flag: 12
 
 For more examples check [cflag_test.go](./cflag_test.go).
 
+### Using callbacks
+
+To automatically execute a function for an active command, callbacks can be defined. The last active command in a command chain and its FlagSet is passed to the callback. When a callback is defined for a parent command but not for its subcommands, the callback of the parent command is executed and the subcommand and its FlagSet is passed to it.
+
+```go
+cb := func(command *cflag.Command, flags *flag.FlagSet) {
+    // Print flag.
+    paramTest, _ := flags.GetInt("test")
+    fmt.Printf("Test: %t %d\n", flags.Changed("test"), paramTest)
+}
+
+// Define flags.
+flags := clag.NewFlagSet("", flag.ExitOnError)
+flags.SortFlags = false
+_ = flags.Int("test", 0, "Test.")
+
+// Set global command callback.
+cflag.SetCallback(cb)
+
+// Run cflag parser.
+cflag.Parse(args, flags)
+```
+
+See `TestCallback` in [cflag_test.go](./cflag_test.go).
+
 ### Using cflag without global values
 
 cflag can be used standalone without using global values. While parsing the arguments, a command expects its name to be either empty or equal `args[0]`. This means the name of the top-level command must be either empty or `args[0]`. 
@@ -140,6 +165,8 @@ cmd := NewCommand("", "Test.", flags)
 cmd.Parse(os.Args)
 fmt.Printf("Test: %t %d\n", flags.Changed("test"), *paramTest)
 ```
+
+See `TestStandalone` in [cflag_test.go](./cflag_test.go).
 
 ### Help page
 

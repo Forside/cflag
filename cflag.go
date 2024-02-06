@@ -11,6 +11,9 @@ import (
 	"strings"
 )
 
+type UsageFunc func(command *Command)
+type CommandCallback func(command *Command, flags *flag.FlagSet)
+
 // A Command represents a (sub)command with a set of defined flags.
 type Command struct {
 	name        string
@@ -22,8 +25,8 @@ type Command struct {
 	hidden      bool
 	deprecated  bool
 	output      io.Writer
-
-	Usage func(c *Command)
+	usageFunc   UsageFunc
+	callback    CommandCallback
 }
 
 // The gap between the start of the line and the command name.
@@ -72,6 +75,28 @@ func (c *Command) SetDescription(description string) {
 	c.description = description
 }
 
+// SetUsageFunc sets the function which prints the command usage when the
+// --help flag is recognized during parsing.
+// By default, it prints the output of CommandUsage which is roughly equivalent to
+// fmt.Printf("%s\n%s\nCommands:\n%sFlags:\n%s", c.GetUsage(), c.GetDescription(), c.CommandUsages(), c.FlagUsages())
+func (c *Command) SetUsageFunc(usageFunc UsageFunc) {
+	c.usageFunc = usageFunc
+}
+
+// SetCallback sets the function which is executed when the command
+// is the last active command with a callback defined at the end of the parsing process.
+// The last active command (with or without a callback defined)
+// is passed to the callback.
+func (c *Command) SetCallback(callback CommandCallback) {
+	c.callback = callback
+}
+
+// SetOutput sets the destination for usage and error messages.
+// If output is nil, os.Stderr is used.
+func (c *Command) SetOutput(output io.Writer) {
+	c.output = output
+}
+
 // MarkHidden sets the command to 'hidden'. It will continue to
 // function but will not show up in help or usage messages.
 func (c *Command) MarkHidden() {
@@ -83,12 +108,6 @@ func (c *Command) MarkHidden() {
 func (c *Command) MarkDeprecated() {
 	c.hidden = true
 	c.deprecated = true
-}
-
-// SetOutput sets the destination for usage and error messages.
-// If output is nil, os.Stderr is used.
-func (c *Command) SetOutput(output io.Writer) {
-	c.output = output
 }
 
 // IsActive reports whether the command is active,
@@ -266,19 +285,20 @@ func (c *Command) Parse(arguments []string) {
 	var argsAfterSubCmd []string
 	cmd := c
 	var subCmd *Command
+	callbackCmd := &command
 
 	// Check if the command name is empty (top-level command)
 	// or matches the first argument (subcommand).
-	if c.name != "" && c.name != arguments[0] {
+	if cmd.name != "" && cmd.name != arguments[0] {
 		return
 	}
 
 	// Mark command as active and remove first argument.
-	c.active = true
+	cmd.active = true
 	arguments = arguments[1:]
 
 	// Parse arguments and handle all commands and flags.
-	for cmd != nil {
+	for {
 		// Search matching subcommand in arguments.
 		if len(cmd.commands) > 0 && len(arguments) > 0 {
 			for iArg, arg := range arguments {
@@ -314,11 +334,15 @@ func (c *Command) Parse(arguments []string) {
 
 		// Print help and exit when help flag is set.
 		if paramHelp, err := cmd.flags.GetBool("help"); err == nil && paramHelp {
-			usage(cmd)
+			cmd.printUsage()
 			os.Exit(0)
 		} else if cmd.deprecated {
 			// Print deprecated warning.
 			_, _ = fmt.Fprintln(cmd.out(), fmt.Sprintf("Command %q is deprecated!", cmd.name))
+		}
+
+		if cmd.callback != nil {
+			callbackCmd = cmd
 		}
 
 		// Parse subcommand.
@@ -332,9 +356,52 @@ func (c *Command) Parse(arguments []string) {
 			argsAfterSubCmd = nil
 		} else {
 			// No subcommand found. Exit loop.
-			cmd = nil
+			break
 		}
 	}
+
+	// Execute the callback function of the last active command which has a callback defined.
+	// or the global callback function (if defined).
+	callbackCmd.execCallback(cmd)
+}
+
+// printUsage calls the function defined via Command.SetUsageFunc
+// or SetUsageFunc, or defaultUsage when both are undefined.
+func (c *Command) printUsage() {
+	if c.usageFunc != nil {
+		c.usageFunc(c)
+	} else if command.usageFunc != nil {
+		command.usageFunc(c)
+	} else {
+		defaultUsage(c)
+	}
+}
+
+// execCallback runs the callback defined via Command.SetCallback or SetCallback.
+// When a target is supplied, it is passed to the callback instead of the command itself.
+func (c *Command) execCallback(target *Command) {
+	var cb CommandCallback
+	var cmd *Command
+
+	// Use either the callback defined for this command or the
+	// global command callback. Exit if no callback is defined.
+	if c.callback != nil {
+		cb = c.callback
+	} else if command.callback != nil {
+		cb = command.callback
+	} else {
+		return
+	}
+
+	// Pass either the supplied target or this command to the callback.
+	if target != nil {
+		cmd = target
+	} else {
+		cmd = c
+	}
+
+	// Execute the callback.
+	cb(cmd, cmd.flags)
 }
 
 // out returns the output stream defined for c or the global command,
@@ -386,6 +453,22 @@ func Cmd(name string, usage string, flags *flag.FlagSet) (*Command, error) {
 // displayed on the generated help page. See CommandUsages.
 func SetDescription(description string) {
 	command.SetDescription(description)
+}
+
+// SetUsageFunc sets the function which prints the command usage when the
+// --help flag is recognized during parsing.
+// By default, it prints the output of CommandUsage which is roughly equivalent to
+// fmt.Printf("%s\n%s\nCommands:\n%sFlags:\n%s", c.GetUsage(), c.GetDescription(), c.CommandUsages(), c.FlagUsages())
+func SetUsageFunc(usageFunc UsageFunc) {
+	command.SetUsageFunc(usageFunc)
+}
+
+// SetCallback sets the global function which is executed at the end
+// of the parsing process, when no callback is defined for the active command.
+// The last active command (with or without a callback defined)
+// is passed to the callback.
+func SetCallback(callback CommandCallback) {
+	command.SetCallback(callback)
 }
 
 // SetOutput sets the destination for usage and error messages.
@@ -443,35 +526,6 @@ func CommandUsage() string {
 	return command.CommandUsage()
 }
 
-// PrintDefaults prints, to standard error unless configured
-// otherwise, the default values of all defined flags in the set.
-// defaultUsage is the default function to print a usage message.
-func defaultUsage(c *Command) {
-	_, _ = fmt.Fprint(c.out(), c.CommandUsage())
-}
-
-// Usage prints to standard error a usage message documenting all defined subcommands and command-line flags.
-// The function is a variable that may be changed to point to a custom function.
-// By default, it prints the output of CommandUsage which is roughly equivalent to
-// fmt.Printf("%s\n%s\nCommands:\n%sFlags:\n%s", c.GetUsage(), c.GetDescription(), c.CommandUsages(), c.FlagUsages())
-var Usage = defaultUsage
-
-// usage calls the Usage method for the flag set, or the usage function if
-// the flag set is CommandLine.
-func usage(c *Command) {
-	if c == nil {
-		return
-	}
-
-	if c.Usage != nil {
-		c.Usage(c)
-	} else if Usage != nil {
-		Usage(c)
-	} else {
-		defaultUsage(c)
-	}
-}
-
 // Parse parses the application command line arguments respecting the
 // defined global command structure. Arguments for each command are parsed
 // using pflag. The first argument is expected to be the application path.
@@ -481,10 +535,16 @@ func Parse(arguments []string, flags *flag.FlagSet) {
 	command.Parse(arguments)
 }
 
-// Reset resets the global register.
+// Reset resets the global command register.
 func Reset() {
 	command = Command{}
-	Usage = defaultUsage
+}
+
+// defaultUsage prints, to standard error unless configured
+// otherwise, the default values of all defined flags in the set.
+// This is the default function to print a usage message.
+func defaultUsage(command *Command) {
+	_, _ = fmt.Fprint(command.out(), command.CommandUsage())
 }
 
 // filterSlice filters out all elements where test returns false.
