@@ -19,11 +19,12 @@ type Command struct {
 	name        string
 	usage       string
 	description string
-	flags       *flag.FlagSet
-	commands    []*Command
 	active      bool
 	hidden      bool
 	deprecated  bool
+	recurseArgs bool
+	flags       *flag.FlagSet
+	commands    []*Command
 	output      io.Writer
 	usageFunc   UsageFunc
 	callback    CommandCallback
@@ -108,6 +109,12 @@ func (c *Command) MarkHidden() {
 func (c *Command) MarkDeprecated() {
 	c.hidden = true
 	c.deprecated = true
+}
+
+// SetRecurseArguments enables recursive parsing of arguments
+// using the parent commands of this command.
+func (c *Command) SetRecurseArguments() {
+	c.recurseArgs = true
 }
 
 // IsActive reports whether the command is active,
@@ -274,9 +281,11 @@ func (c *Command) CommandUsage() string {
 	return buf.String()
 }
 
-// Parse parses the command line arguments respecting the defined
+// parse parses the command line arguments respecting the defined
 // command structure. Arguments for each command are parsed using pflag.
-func (c *Command) Parse(arguments []string) {
+// If executeCallback is true, the callback defined for the last active command
+// will be executed (or the global callback if defined).
+func (c *Command) parse(arguments []string, executeCallback bool) {
 	if len(arguments) == 0 {
 		return
 	}
@@ -285,7 +294,6 @@ func (c *Command) Parse(arguments []string) {
 	var argsAfterSubCmd []string
 	cmd := c
 	var subCmd *Command
-	callbackCmd := &command
 
 	// Check if the command name is empty (top-level command)
 	// or matches the first argument (subcommand).
@@ -297,6 +305,9 @@ func (c *Command) Parse(arguments []string) {
 	cmd.active = true
 	arguments = arguments[1:]
 
+	// Slice to keep track of the chain of active commands.
+	var cmdChain []*Command
+
 	// Parse arguments and handle all commands and flags.
 	for {
 		// Search matching subcommand in arguments.
@@ -305,7 +316,8 @@ func (c *Command) Parse(arguments []string) {
 				if iCmd := slices.IndexFunc(cmd.commands, func(cmd *Command) bool {
 					return cmd.name == arg
 				}); iCmd >= 0 {
-					// Cache arguments before and after command.
+					// Remember subcommand for next loop
+					// and cache arguments before and after command name.
 					subCmd = cmd.commands[iCmd]
 					argsBeforeSubCmd = arguments[:iArg]
 					argsAfterSubCmd = arguments[iArg+1:]
@@ -336,14 +348,27 @@ func (c *Command) Parse(arguments []string) {
 		if paramHelp, err := cmd.flags.GetBool("help"); err == nil && paramHelp {
 			cmd.printUsage()
 			os.Exit(0)
-		} else if cmd.deprecated {
-			// Print deprecated warning.
+		}
+
+		// When recurseArgs is on, parse the arguments for the current command
+		// using all parent commands.
+		if cmd.recurseArgs && len(argsBeforeSubCmd) > 0 {
+			for i := range cmdChain {
+				// Make a copy of the arguments and insert the parent command name.
+				parentCmd := cmdChain[len(cmdChain)-1-i]
+				parentArgs := slices.Clone(argsBeforeSubCmd)
+				parentArgs = slices.Insert(parentArgs, 0, parentCmd.name)
+				parentCmd.parse(parentArgs, false)
+			}
+		}
+
+		// Print deprecated warning.
+		if cmd.deprecated {
 			_, _ = fmt.Fprintln(cmd.out(), fmt.Sprintf("Command %q is deprecated!", cmd.name))
 		}
 
-		if cmd.callback != nil {
-			callbackCmd = cmd
-		}
+		// Add command to chain.
+		cmdChain = append(cmdChain, cmd)
 
 		// Parse subcommand.
 		if subCmd != nil {
@@ -360,9 +385,23 @@ func (c *Command) Parse(arguments []string) {
 		}
 	}
 
-	// Execute the callback function of the last active command which has a callback defined.
+	// Execute the callback function of the last active command which has a callback defined,
 	// or the global callback function (if defined).
-	callbackCmd.execCallback(cmd)
+	if executeCallback {
+		for i := range cmdChain {
+			callbackCmd := cmdChain[len(cmdChain)-1-i]
+			if callbackCmd.callback != nil || i == len(cmdChain)-1 {
+				callbackCmd.execCallback(cmd)
+				break
+			}
+		}
+	}
+}
+
+// Parse parses the command line arguments respecting the defined
+// command structure. Arguments for each command are parsed using pflag.
+func (c *Command) Parse(arguments []string) {
+	c.parse(arguments, true)
 }
 
 // printUsage calls the function defined via Command.SetUsageFunc
@@ -559,13 +598,13 @@ func filterSlice[T any](slice []T, test func(T) bool) []T {
 }
 
 // getTermSize determines the dimensions of the active terminal.
-func getTermSize() (int, int, error) {
+func getTermSize() (width, height int, err error) {
 	fd := int(os.Stdout.Fd())
-	width, height, err := term.GetSize(fd)
+	width, height, err = term.GetSize(fd)
 	if err != nil {
 		return 0, 0, err
 	}
-	return width, height, nil
+	return
 }
 
 /**

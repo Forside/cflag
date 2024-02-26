@@ -469,6 +469,39 @@ func TestDeprecatedUse(t *testing.T) {
 	t.Log(output)
 }
 
+func TestParentArgs(t *testing.T) {
+	a := assert.New(t)
+	ctx := buildTestContext()
+
+	// Parse arguments passed to foo/bar recursively using its parent commands (base and foo).
+	ctx.cmdFooBar.SetRecurseArguments()
+
+	// Setup test arguments.
+	ctx.arguments = append(ctx.arguments,
+		[]string{"foo", "bar", "--test0", "10", "--test1", "11", "--test2", "12"}...,
+	)
+
+	// Run cflag parser.
+	Parse(ctx.arguments, ctx.flags)
+
+	// Print flags.
+	t.Logf("base: %t\n", IsActive())
+	t.Logf("foo: %t\n", ctx.cmdFoo.IsActive())
+	t.Logf("foo/bar: %t\n", ctx.cmdFooBar.IsActive())
+
+	t.Logf("Test 0: %t %d\n", ctx.flags.Changed("test0"), *ctx.paramTest0)
+	t.Logf("Test 1: %t %d\n", ctx.flagsFoo.Changed("test1"), *ctx.paramTest1)
+	t.Logf("Test 2: %t %d\n", ctx.flagsFooBar.Changed("test2"), *ctx.paramTest2)
+
+	// Check flag values.
+	a.True(IsActive())
+	a.True(ctx.cmdFoo.IsActive())
+	a.True(ctx.cmdFooBar.IsActive())
+	a.Equal(10, *ctx.paramTest0)
+	a.Equal(11, *ctx.paramTest1)
+	a.Equal(12, *ctx.paramTest2)
+}
+
 func TestRedirectOutput(t *testing.T) {
 	a := assert.New(t)
 	ctx := buildTestContext()
@@ -509,30 +542,53 @@ func TestRedirectOutput(t *testing.T) {
 
 func TestCallback(t *testing.T) {
 	a := assert.New(t)
+	ctx := buildTestContext()
 
 	cb := func(command *Command, flags *flag.FlagSet) {
 		// Print flag.
-		paramTest, _ := flags.GetInt("test")
-		t.Logf("Test: %t %d\n", flags.Changed("test"), paramTest)
+		paramTest, _ := flags.GetInt("test0")
+		t.Logf("Test 0: %t %d\n", flags.Changed("test0"), paramTest)
 
 		// Check parsed value.
-		a.Equal(1, paramTest)
+		a.Equal(10, paramTest)
 	}
 
 	// Setup test arguments.
-	args := slices.Clone(os.Args)
-	args = append(args, "--test", "1")
-
-	// Define flags.
-	flags := NewFlagSet("", flag.ExitOnError)
-	flags.SortFlags = false
-	_ = flags.Int("test", 0, "Test.")
+	ctx.arguments = append(ctx.arguments,
+		[]string{"--test0", "10"}...,
+	)
 
 	// Set global command callback.
 	SetCallback(cb)
 
 	// Run cflag parser.
-	Parse(args, flags)
+	Parse(ctx.arguments, ctx.flags)
+}
+
+func TestCallback2(t *testing.T) {
+	a := assert.New(t)
+	ctx := buildTestContext()
+
+	cbFoo := func(command *Command, flags *flag.FlagSet) {
+		// Print flags.
+		t.Logf("Test 0: %t %d\n", ctx.flags.Changed("test0"), *ctx.paramTest0)
+		t.Logf("Test 1: %t %d\n", ctx.flagsFoo.Changed("test1"), *ctx.paramTest1)
+
+		// Check parsed values.
+		a.Equal(10, *ctx.paramTest0)
+		a.Equal(11, *ctx.paramTest1)
+	}
+
+	// Setup test arguments.
+	ctx.arguments = append(ctx.arguments,
+		[]string{"--test0", "10", "foo", "--test1", "11"}...,
+	)
+
+	// Set global command callback.
+	ctx.cmdFoo.SetCallback(cbFoo)
+
+	// Run cflag parser.
+	Parse(ctx.arguments, ctx.flags)
 }
 
 func TestStandalone(t *testing.T) {
