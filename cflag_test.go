@@ -581,11 +581,11 @@ func TestCallback2(t *testing.T) {
 
 	// Setup test arguments.
 	ctx.arguments = append(ctx.arguments,
-		[]string{"--test0", "10", "foo", "--test1", "11"}...,
+		[]string{"foo", "--test0", "10", "--test1", "11"}...,
 	)
 
 	// Set global command callback.
-	ctx.cmdFoo.SetCallback(cbFoo)
+	ctx.cmdFoo.SetCallback(cbFoo).SetRecurseArguments()
 
 	// Run cflag parser.
 	Parse(ctx.arguments, ctx.flags)

@@ -72,49 +72,56 @@ func (c *Command) Cmd(name string, usage string, flags *flag.FlagSet) (*Command,
 
 // SetDescription defines a long description that is
 // displayed on the generated help page. See CommandUsages.
-func (c *Command) SetDescription(description string) {
+func (c *Command) SetDescription(description string) *Command {
 	c.description = description
+	return c
 }
 
 // SetUsageFunc sets the function which prints the command usage when the
 // --help flag is recognized during parsing.
 // By default, it prints the output of CommandUsage which is roughly equivalent to
 // fmt.Printf("%s\n%s\nCommands:\n%sFlags:\n%s", c.GetUsage(), c.GetDescription(), c.CommandUsages(), c.FlagUsages())
-func (c *Command) SetUsageFunc(usageFunc UsageFunc) {
+func (c *Command) SetUsageFunc(usageFunc UsageFunc) *Command {
 	c.usageFunc = usageFunc
+	return c
 }
 
 // SetCallback sets the function which is executed when the command
 // is the last active command with a callback defined at the end of the parsing process.
 // The last active command (with or without a callback defined)
 // is passed to the callback.
-func (c *Command) SetCallback(callback CommandCallback) {
+func (c *Command) SetCallback(callback CommandCallback) *Command {
 	c.callback = callback
+	return c
 }
 
 // SetOutput sets the destination for usage and error messages.
 // If output is nil, os.Stderr is used.
-func (c *Command) SetOutput(output io.Writer) {
+func (c *Command) SetOutput(output io.Writer) *Command {
 	c.output = output
+	return c
 }
 
 // MarkHidden sets the command to 'hidden'. It will continue to
 // function but will not show up in help or usage messages.
-func (c *Command) MarkHidden() {
+func (c *Command) MarkHidden() *Command {
 	c.hidden = true
+	return c
 }
 
 // MarkDeprecated indicates that the command is deprecated. It will
 // continue to function but will not show up in help or usage messages.
-func (c *Command) MarkDeprecated() {
+func (c *Command) MarkDeprecated() *Command {
 	c.hidden = true
 	c.deprecated = true
+	return c
 }
 
 // SetRecurseArguments enables recursive parsing of arguments
 // using the parent commands of this command.
-func (c *Command) SetRecurseArguments() {
+func (c *Command) SetRecurseArguments() *Command {
 	c.recurseArgs = true
+	return c
 }
 
 // IsActive reports whether the command is active,
@@ -490,30 +497,34 @@ func Cmd(name string, usage string, flags *flag.FlagSet) (*Command, error) {
 
 // SetDescription defines a long description that is
 // displayed on the generated help page. See CommandUsages.
-func SetDescription(description string) {
+func SetDescription(description string) *Command {
 	command.SetDescription(description)
+	return &command
 }
 
 // SetUsageFunc sets the function which prints the command usage when the
 // --help flag is recognized during parsing.
 // By default, it prints the output of CommandUsage which is roughly equivalent to
 // fmt.Printf("%s\n%s\nCommands:\n%sFlags:\n%s", c.GetUsage(), c.GetDescription(), c.CommandUsages(), c.FlagUsages())
-func SetUsageFunc(usageFunc UsageFunc) {
+func SetUsageFunc(usageFunc UsageFunc) *Command {
 	command.SetUsageFunc(usageFunc)
+	return &command
 }
 
 // SetCallback sets the global function which is executed at the end
 // of the parsing process, when no callback is defined for the active command.
 // The last active command (with or without a callback defined)
 // is passed to the callback.
-func SetCallback(callback CommandCallback) {
+func SetCallback(callback CommandCallback) *Command {
 	command.SetCallback(callback)
+	return &command
 }
 
 // SetOutput sets the destination for usage and error messages.
 // If output is nil, os.Stderr is used.
-func SetOutput(output io.Writer) {
+func SetOutput(output io.Writer) *Command {
 	command.output = output
+	return &command
 }
 
 // IsActive reports whether the global command is active, i.e. Parse has been called.
