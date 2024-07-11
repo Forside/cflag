@@ -12,7 +12,7 @@ import (
 )
 
 type UsageFunc func(command *Command)
-type CommandCallback func(command *Command, flags *flag.FlagSet)
+type CommandCallback func(command *Command, flags *flag.FlagSet) error
 
 // A Command represents a (sub)command with a set of defined flags.
 type Command struct {
@@ -292,9 +292,9 @@ func (c *Command) CommandUsage() string {
 // command structure. Arguments for each command are parsed using pflag.
 // If executeCallback is true, the callback defined for the last active command
 // will be executed (or the global callback if defined).
-func (c *Command) parse(arguments []string, executeCallback bool) {
+func (c *Command) parse(arguments []string, executeCallback bool) error {
 	if len(arguments) == 0 {
-		return
+		return os.ErrInvalid
 	}
 
 	var argsBeforeSubCmd []string
@@ -305,7 +305,7 @@ func (c *Command) parse(arguments []string, executeCallback bool) {
 	// Check if the command name is empty (top-level command)
 	// or matches the first argument (subcommand).
 	if cmd.name != "" && cmd.name != arguments[0] {
-		return
+		return fmt.Errorf("Command %q does not match arguments.", cmd.name)
 	}
 
 	// Mark command as active and remove first argument.
@@ -398,17 +398,18 @@ func (c *Command) parse(arguments []string, executeCallback bool) {
 		for i := range cmdChain {
 			callbackCmd := cmdChain[len(cmdChain)-1-i]
 			if callbackCmd.callback != nil || i == len(cmdChain)-1 {
-				callbackCmd.execCallback(cmd)
-				break
+				return callbackCmd.execCallback(cmd)
 			}
 		}
 	}
+
+	return nil
 }
 
 // Parse parses the command line arguments respecting the defined
 // command structure. Arguments for each command are parsed using pflag.
-func (c *Command) Parse(arguments []string) {
-	c.parse(arguments, true)
+func (c *Command) Parse(arguments []string) error {
+	return c.parse(arguments, true)
 }
 
 // printUsage calls the function defined via Command.SetUsageFunc
@@ -425,7 +426,7 @@ func (c *Command) printUsage() {
 
 // execCallback runs the callback defined via Command.SetCallback or SetCallback.
 // When a target is supplied, it is passed to the callback instead of the command itself.
-func (c *Command) execCallback(target *Command) {
+func (c *Command) execCallback(target *Command) error {
 	var cb CommandCallback
 	var cmd *Command
 
@@ -436,7 +437,7 @@ func (c *Command) execCallback(target *Command) {
 	} else if command.callback != nil {
 		cb = command.callback
 	} else {
-		return
+		return nil
 	}
 
 	// Pass either the supplied target or this command to the callback.
@@ -447,7 +448,7 @@ func (c *Command) execCallback(target *Command) {
 	}
 
 	// Execute the callback.
-	cb(cmd, cmd.flags)
+	return cb(cmd, cmd.flags)
 }
 
 // out returns the output stream defined for c or the global command,
@@ -580,9 +581,9 @@ func CommandUsage() string {
 // defined global command structure. Arguments for each command are parsed
 // using pflag. The first argument is expected to be the application path.
 // Use flag.NewFlagSet to create the flag.FlagSet for parsing top-level application flags.
-func Parse(arguments []string, flags *flag.FlagSet) {
+func Parse(arguments []string, flags *flag.FlagSet) error {
 	command.flags = flags
-	command.Parse(arguments)
+	return command.Parse(arguments)
 }
 
 // Reset resets the global command register.

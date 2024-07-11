@@ -164,7 +164,7 @@ func TestParse(t *testing.T) {
 	)
 
 	// Run cflag parser.
-	Parse(ctx.arguments, ctx.flags)
+	a.Nil(Parse(ctx.arguments, ctx.flags))
 
 	// Check version flag.
 	if *ctx.paramVersion {
@@ -206,7 +206,7 @@ func TestTypes(t *testing.T) {
 	)
 
 	// Run cflag parser.
-	Parse(ctx.arguments, ctx.flags)
+	a.Nil(Parse(ctx.arguments, ctx.flags))
 
 	// Print flags.
 	t.Logf("Bool flag: %t %t\n", ctx.flagsTypes.Changed("bool"), *ctx.paramB)
@@ -250,7 +250,7 @@ func TestMisc(t *testing.T) {
 	)
 
 	// Run cflag parser.
-	Parse(ctx.arguments, ctx.flags)
+	a.Nil(Parse(ctx.arguments, ctx.flags))
 
 	// Find commands.
 	cmdFoo := Lookup("foo")
@@ -314,7 +314,7 @@ func TestHelp(t *testing.T) {
 	a.NoError(err)
 
 	// Run cflag parser.
-	Parse(ctx.arguments, ctx.flags)
+	a.Nil(Parse(ctx.arguments, ctx.flags))
 }
 
 func TestCommandHelp(t *testing.T) {
@@ -355,7 +355,7 @@ func TestCommandHelp(t *testing.T) {
 	a.NoError(err)
 
 	// Run cflag parser.
-	Parse(ctx.arguments, ctx.flags)
+	a.Nil(Parse(ctx.arguments, ctx.flags))
 }
 
 func TestHidden(t *testing.T) {
@@ -394,7 +394,7 @@ func TestHidden(t *testing.T) {
 	a.NoError(err)
 
 	// Run cflag parser.
-	Parse(ctx.arguments, ctx.flags)
+	a.Nil(Parse(ctx.arguments, ctx.flags))
 }
 
 func TestDeprecated(t *testing.T) {
@@ -433,7 +433,7 @@ func TestDeprecated(t *testing.T) {
 	a.NoError(err)
 
 	// Run cflag parser.
-	Parse(ctx.arguments, ctx.flags)
+	a.Nil(Parse(ctx.arguments, ctx.flags))
 }
 
 func TestDeprecatedUse(t *testing.T) {
@@ -451,7 +451,7 @@ func TestDeprecatedUse(t *testing.T) {
 	// Capture output from function.
 	output, err := captureOutput(true, true, func() error {
 		// Run cflag parser.
-		Parse(ctx.arguments, ctx.flags)
+		a.Nil(Parse(ctx.arguments, ctx.flags))
 		return nil
 	})
 	a.Nil(err)
@@ -482,7 +482,7 @@ func TestParentArgs(t *testing.T) {
 	)
 
 	// Run cflag parser.
-	Parse(ctx.arguments, ctx.flags)
+	a.Nil(Parse(ctx.arguments, ctx.flags))
 
 	// Print flags.
 	t.Logf("base: %t\n", IsActive())
@@ -537,20 +537,21 @@ func TestRedirectOutput(t *testing.T) {
 	SetOutput(os.Stdout)
 
 	// Run cflag parser.
-	Parse(ctx.arguments, ctx.flags)
+	a.Nil(Parse(ctx.arguments, ctx.flags))
 }
 
 func TestCallback(t *testing.T) {
 	a := assert.New(t)
 	ctx := buildTestContext()
 
-	cb := func(command *Command, flags *flag.FlagSet) {
+	cb := func(command *Command, flags *flag.FlagSet) error {
 		// Print flag.
 		paramTest, _ := flags.GetInt("test0")
 		t.Logf("Test 0: %t %d\n", flags.Changed("test0"), paramTest)
 
 		// Check parsed value.
 		a.Equal(10, paramTest)
+		return nil
 	}
 
 	// Setup test arguments.
@@ -562,14 +563,14 @@ func TestCallback(t *testing.T) {
 	SetCallback(cb)
 
 	// Run cflag parser.
-	Parse(ctx.arguments, ctx.flags)
+	a.Nil(Parse(ctx.arguments, ctx.flags))
 }
 
 func TestCallback2(t *testing.T) {
 	a := assert.New(t)
 	ctx := buildTestContext()
 
-	cbFoo := func(command *Command, flags *flag.FlagSet) {
+	cbFoo := func(command *Command, flags *flag.FlagSet) error {
 		// Print flags.
 		t.Logf("Test 0: %t %d\n", ctx.flags.Changed("test0"), *ctx.paramTest0)
 		t.Logf("Test 1: %t %d\n", ctx.flagsFoo.Changed("test1"), *ctx.paramTest1)
@@ -577,6 +578,7 @@ func TestCallback2(t *testing.T) {
 		// Check parsed values.
 		a.Equal(10, *ctx.paramTest0)
 		a.Equal(11, *ctx.paramTest1)
+		return nil
 	}
 
 	// Setup test arguments.
@@ -588,7 +590,7 @@ func TestCallback2(t *testing.T) {
 	ctx.cmdFoo.SetCallback(cbFoo).SetRecurseArguments()
 
 	// Run cflag parser.
-	Parse(ctx.arguments, ctx.flags)
+	a.Nil(Parse(ctx.arguments, ctx.flags))
 }
 
 func TestStandalone(t *testing.T) {
@@ -607,7 +609,7 @@ func TestStandalone(t *testing.T) {
 	cmd := NewCommand("", "Test.", flags)
 
 	// Run cflag parser.
-	cmd.Parse(args)
+	a.Nil(cmd.Parse(args))
 
 	// Print flag.
 	t.Logf("Test: %t %d\n", flags.Changed("test"), *paramTest)
@@ -644,7 +646,7 @@ func TestExample(t *testing.T) {
 	cmdFooBar, _ := cmdFoo.Cmd("bar", "Bar command", flagsFooBar)
 
 	// Parse arguments and print values.
-	Parse(args, flags)
+	a.Nil(Parse(args, flags))
 	t.Logf("version flag: %t\n", *paramVersion)
 	t.Logf("foo command supplied: %t\n", cmdFoo.IsActive())
 	t.Logf("foo/bar command supplied: %t\n", cmdFooBar.IsActive())
