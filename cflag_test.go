@@ -2,13 +2,12 @@ package cflag
 
 import (
 	"fmt"
+	flag "github.com/spf13/pflag"
+	"github.com/stretchr/testify/assert"
 	"io"
 	"os"
 	"slices"
 	"testing"
-
-	flag "github.com/spf13/pflag"
-	"github.com/stretchr/testify/assert"
 )
 
 const VERSION_MAJOR = 0

@@ -34,19 +34,24 @@ import (
 To parse application arguments without commands, define a FlagSet, register flags and parse the arguments using cflag.
 
 ```go
-flags := flag.NewFlagSet("", flag.ExitOnError)
+flags := cflag.NewFlagSet("", flag.ExitOnError)
 paramVersion = flags.BoolP("version", "v", false, "Display the application version.")
 
 cflag.Parse(os.Args, flags)
 fmt.Printf("version flag: %t\n", *paramVersion)
 ```
 
+```shellsession
+$ ./main --version
+version flag: true
+```
+
 ### Parsing a command with flags
 
-To add a command with a new set of flags, define a FlagSet, register a command with the set and parse the arguments using cflag. When no flags are required for the application or a command, supply nil instead of a FlagSet.
+To add a command with a new set of flags, define a FlagSet, register a command with the set and parse the arguments using cflag. When no flags are required for the application or a command, supply `nil` instead of a FlagSet.
 
 ```go
-flagsFoo := flag.NewFlagSet("", flag.ExitOnError)
+flagsFoo := cflag.NewFlagSet("", flag.ExitOnError)
 paramFooTest1 := flagsFoo.Int("test1", 1, "Test 1.")
 cmdFoo := cflag.Cmd("foo", flagsFoo)
 
@@ -55,13 +60,19 @@ fmt.Printf("foo command supplied: %t\n", cmdFoo.IsActive())
 fmt.Printf("test1 flag: %d\n", *paramFooTest1)
 ```
 
+```shellsession
+$ ./main foo --test1 5
+foo command suppplied: true
+test1 flag: 5
+```
+
 ### Parsing subcommands
 
 To add a subcommand to another command, register it to the command instead of to cflag directly.
 
 ```go
 cmdFoo := cflag.Cmd("foo", nil)
-flagsFooBar := flag.NewFlagSet("", flag.ExitOnError)
+flagsFooBar := cflag.NewFlagSet("", flag.ExitOnError)
 paramFooBarTest2 := flagsFoo.Int("test2", 2, "Test 2.")
 cmdFooBar := cmdFoo.Cmd("bar", flagsFooBar)
 
@@ -69,6 +80,13 @@ cflag.Parse(os.Args, nil)
 fmt.Printf("foo command supplied: %t\n", cmdFoo.IsActive())
 fmt.Printf("foo/bar command supplied: %t\n", cmdFooBar.IsActive())
 fmt.Printf("test2 flag: %d\n", *paramFooBarTest2)
+```
+
+```shellsession
+$ ./main foo bar
+foo command supplied: true
+foo/bar command supplied: true
+test2 flag: 2
 ```
 
 ### Full example

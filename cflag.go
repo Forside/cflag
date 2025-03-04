@@ -473,7 +473,7 @@ func NewFlagSet(name string, errorHandling flag.ErrorHandling) *flag.FlagSet {
 
 // NewCommand creates a new Command object for use with AddCommand.
 // A top-level command must have an empty name.
-// Use flag.NewFlagSet to create the flag.FlagSet.
+// Use cflag.NewFlagSet to create the flag.FlagSet.
 func NewCommand(name string, usage string, flags *flag.FlagSet) *Command {
 	return &Command{
 		name:  name,
@@ -580,7 +580,7 @@ func CommandUsage() string {
 // Parse parses the application command line arguments respecting the
 // defined global command structure. Arguments for each command are parsed
 // using pflag. The first argument is expected to be the application path.
-// Use flag.NewFlagSet to create the flag.FlagSet for parsing top-level application flags.
+// Use cflag.NewFlagSet to create the flag.FlagSet for parsing top-level application flags.
 func Parse(arguments []string, flags *flag.FlagSet) error {
 	command.flags = flags
 	return command.Parse(arguments)
