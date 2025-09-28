@@ -3,12 +3,13 @@ package cflag
 import (
 	"bytes"
 	"fmt"
-	flag "github.com/spf13/pflag"
-	"golang.org/x/term"
 	"io"
 	"os"
 	"slices"
 	"strings"
+
+	flag "github.com/spf13/pflag"
+	"golang.org/x/term"
 )
 
 type UsageFunc func(command *Command)
@@ -24,17 +25,19 @@ type Command struct {
 	deprecated  bool
 	recurseArgs bool
 	flags       *flag.FlagSet
+	parent      *Command
 	commands    []*Command
 	output      io.Writer
 	usageFunc   UsageFunc
 	callback    CommandCallback
 }
 
-// The gap between the start of the line and the command name.
-const commandGapLen = 2
-
-// The minimum gap between the command name and the command usage.
-const commandUsageGapLen = 3
+const (
+	// The gap between the start of the line and the command name on the help page.
+	commandGapLen = 2
+	// The minimum gap between the command name and the command usage on the help page.
+	commandUsageGapLen = 3
+)
 
 // Holds the global command register,
 // i.e. top-level flags and commands defined for the application.
@@ -55,6 +58,7 @@ func (c *Command) AddCommand(command *Command) error {
 		return fmt.Errorf("command with name '%s' already exists", command.name)
 	}
 
+	command.parent = c
 	c.commands = append(c.commands, command)
 	return nil
 }
@@ -159,21 +163,39 @@ func (c *Command) GetDescription() string {
 	return c.description
 }
 
+// GetFlags returns the registered FlagSet for the command.
+func (c *Command) GetFlags() *flag.FlagSet {
+	return c.flags
+}
+
 // Lookup searches for a registered subcommand by its name.
 // If no matching command is found, nil is returned.
-func (c *Command) Lookup(name string) *Command {
-	if len(name) == 0 {
-		return nil
+// Subsequent subcommands can be found by supplying multiple names.
+// When no or an empty name is supplied, the command itself is returned.
+func (c *Command) Lookup(names ...string) *Command {
+	// Return the command itself when no name is supplied.
+	if len(names) == 0 {
+		return c
 	}
 
-	// Find command with matching name.
-	if iCmd := slices.IndexFunc(c.commands, func(cmd *Command) bool {
-		return cmd.name == name
-	}); iCmd >= 0 {
-		return c.commands[iCmd]
+	cmd := c
+	for _, name := range names {
+		// Keep current command on empty name.
+		if name == "" {
+			continue
+		}
+
+		// Find command with matching name.
+		if iCmd := slices.IndexFunc(cmd.commands, func(cmd *Command) bool {
+			return cmd.name == name
+		}); iCmd >= 0 {
+			cmd = cmd.commands[iCmd]
+		} else {
+			return nil
+		}
 	}
 
-	return nil
+	return cmd
 }
 
 // Active searches for a registered subcommand by its name
@@ -184,6 +206,47 @@ func (c *Command) Active(name string) bool {
 		return cmd.IsActive()
 	}
 	return false
+}
+
+// GetActiveSubcommand returns the active subcommand of the command
+// or nil when no subcommand is active.
+func (c *Command) GetActiveSubcommand() *Command {
+	for _, cmd := range c.commands {
+		if cmd.active {
+			return cmd
+		}
+	}
+	return nil
+}
+
+// GetFinalActiveCommand returns the final active command in the command chain.
+// When no subcommand is active, the command itself is returned.
+func (c *Command) GetFinalActiveCommand() *Command {
+	cmd := c
+
+	for {
+		if subCmd := cmd.GetActiveSubcommand(); subCmd != nil {
+			cmd = subCmd
+		} else {
+			break
+		}
+	}
+
+	return cmd
+}
+
+// GetActiveCommandChain returns a slice containing all active commands,
+// where the first element is the command itself.
+func (c *Command) GetActiveCommandChain() []*Command {
+	var cmdChain []*Command
+	cmd := c
+
+	for cmd != nil {
+		cmdChain = append(cmdChain, cmd)
+		cmd = cmd.GetActiveSubcommand()
+	}
+
+	return cmdChain
 }
 
 // CommandUsagesWrapped returns a string containing the usage information
@@ -220,7 +283,7 @@ func (c *Command) CommandUsagesWrapped(cols int) string {
 		usageGapLen := maxNameLen - nameLen + commandUsageGapLen
 		usageGap := strings.Repeat(" ", usageGapLen)
 		cmdUsage := wrap(fullUsageGapLen, cols, cmd.usage)
-		_, _ = fmt.Fprintln(buf, gap+cmd.name+usageGap+cmdUsage)
+		_, _ = fmt.Fprintf(buf, "%s%s%s%s\n", gap, cmd.name, usageGap, cmdUsage)
 	}
 
 	// Return usages string.
@@ -254,6 +317,7 @@ func (c *Command) FlagUsages() string {
 // description for this command if defined.
 func (c *Command) CommandUsage() string {
 	buf := new(bytes.Buffer)
+	needsSeparatorLine := false
 
 	// Add deprecated warning.
 	if c.deprecated {
@@ -263,11 +327,13 @@ func (c *Command) CommandUsage() string {
 	// Add command usage.
 	if len(c.usage) > 0 {
 		_, _ = fmt.Fprintln(buf, c.usage)
+		needsSeparatorLine = true
 	}
 
 	// Add command description.
 	if len(c.description) > 0 {
 		_, _ = fmt.Fprintln(buf, c.description)
+		needsSeparatorLine = true
 	}
 
 	// Get terminal width to wrap subcommand and flag usages.
@@ -275,17 +341,104 @@ func (c *Command) CommandUsage() string {
 
 	// Add subcommands.
 	if len(c.commands) > 0 {
+		if needsSeparatorLine {
+			_, _ = fmt.Fprintln(buf)
+		}
 		_, _ = fmt.Fprintln(buf, "Commands:")
 		_, _ = fmt.Fprint(buf, c.CommandUsagesWrapped(termWidth))
+		needsSeparatorLine = true
 	}
 
 	// Add flag usages.
 	if c.flags.HasAvailableFlags() {
+		if needsSeparatorLine {
+			_, _ = fmt.Fprintln(buf)
+		}
 		_, _ = fmt.Fprintln(buf, "Flags:")
 		_, _ = fmt.Fprint(buf, c.FlagUsagesWrapped(termWidth))
 	}
 
 	return buf.String()
+}
+
+// Parse parses the command line arguments respecting the defined
+// command structure. Arguments for each command are parsed using pflag.
+func (c *Command) Parse(arguments []string) error {
+	return c.parse(arguments, true)
+}
+
+func parseCmd(cmd *Command, arguments []string, executeCallback bool) (subCmd *Command, argsBeforeSubCmd, argsAfterSubCmd []string, err error) {
+	// Mark command as active.
+	cmd.active = true
+
+	// Search for matching subcommand in arguments.
+	if len(cmd.commands) > 0 {
+		for iArg, arg := range arguments {
+			// Find argument in command names.
+			if subCmdTmp := cmd.Lookup(arg); subCmdTmp != nil {
+				// Check whether the valid command name is a parameter value.
+				argIsValue := false
+				if iArg > 0 && cmd.flags != nil {
+					prevArg := arguments[iArg-1]
+					if f, r := findLastFlagFromArgC(cmd, prevArg); f != nil {
+						argIsValue = f.Value.Type() != "bool" && f.Value.Type() != "boolSlice" && r == ""
+					}
+				}
+
+				// Remember subcommand for next loop
+				// and cache arguments before and after command name.
+				if !argIsValue {
+					subCmd = subCmdTmp
+					argsBeforeSubCmd = arguments[:iArg]
+					argsAfterSubCmd = arguments[iArg+1:]
+					break
+				}
+			}
+		}
+	}
+
+	// Use all arguments when no subcommand is found.
+	if subCmd == nil {
+		argsBeforeSubCmd = arguments
+	}
+
+	// Create flag set if unset.
+	if cmd.flags == nil {
+		cmd.flags = NewFlagSet("", flag.ExitOnError)
+	}
+
+	// Add help flag if unset.
+	if cmd.flags.Lookup("help") == nil {
+		if cmd.flags.ShorthandLookup("h") == nil {
+			cmd.flags.BoolP("help", "h", false, "Display help.")
+		} else if cmd.flags.ShorthandLookup("?") == nil {
+			cmd.flags.BoolP("help", "?", false, "Display help.")
+		} else {
+			cmd.flags.Bool("help", false, "Display help.")
+		}
+	}
+
+	// Parse command arguments.
+	_ = cmd.flags.Parse(argsBeforeSubCmd)
+
+	// Print help and exit when help flag is set.
+	if paramHelp, err := cmd.flags.GetBool("help"); err == nil && paramHelp {
+		cmd.printUsage()
+		os.Exit(0)
+	}
+
+	// When recurseArgs is on, parse the arguments for the current command
+	// using all parent commands.
+	if cmd.recurseArgs && cmd.parent != nil && len(argsBeforeSubCmd) > 0 {
+		_, _, _, _ = parseCmd(cmd.parent, argsBeforeSubCmd, false)
+	}
+
+	// Print deprecated warning.
+	if cmd.deprecated {
+		_, _ = fmt.Fprintf(cmd.out(), "Command %q is deprecated!\n", cmd.name)
+	}
+
+	return
 }
 
 // parse parses the command line arguments respecting the defined
@@ -297,19 +450,17 @@ func (c *Command) parse(arguments []string, executeCallback bool) error {
 		return os.ErrInvalid
 	}
 
-	var argsBeforeSubCmd []string
-	var argsAfterSubCmd []string
 	cmd := c
 	var subCmd *Command
+	var err error
 
 	// Check if the command name is empty (top-level command)
 	// or matches the first argument (subcommand).
 	if cmd.name != "" && cmd.name != arguments[0] {
-		return fmt.Errorf("Command %q does not match arguments.", cmd.name)
+		return fmt.Errorf("command %q does not match arguments", cmd.name)
 	}
 
-	// Mark command as active and remove first argument.
-	cmd.active = true
+	// Remove command name from arguments.
 	arguments = arguments[1:]
 
 	// Slice to keep track of the chain of active commands.
@@ -317,79 +468,20 @@ func (c *Command) parse(arguments []string, executeCallback bool) error {
 
 	// Parse arguments and handle all commands and flags.
 	for {
-		// Search matching subcommand in arguments.
-		if len(cmd.commands) > 0 && len(arguments) > 0 {
-			for iArg, arg := range arguments {
-				if iCmd := slices.IndexFunc(cmd.commands, func(cmd *Command) bool {
-					return cmd.name == arg
-				}); iCmd >= 0 {
-					// Remember subcommand for next loop
-					// and cache arguments before and after command name.
-					subCmd = cmd.commands[iCmd]
-					argsBeforeSubCmd = arguments[:iArg]
-					argsAfterSubCmd = arguments[iArg+1:]
-					break
-				}
-			}
-		}
-
-		// Use all arguments when no subcommand is found.
-		if subCmd == nil {
-			argsBeforeSubCmd = arguments
-		}
-
-		// Create flag set if unset.
-		if cmd.flags == nil {
-			cmd.flags = NewFlagSet("", flag.ExitOnError)
-		}
-
-		// Add help flag if unset.
-		if _, err := cmd.flags.GetBool("help"); err != nil {
-			cmd.flags.BoolP("help", "h", false, "Display help.")
-		}
-
-		// Parse command arguments.
-		_ = cmd.flags.Parse(argsBeforeSubCmd)
-
-		// Print help and exit when help flag is set.
-		if paramHelp, err := cmd.flags.GetBool("help"); err == nil && paramHelp {
-			cmd.printUsage()
-			os.Exit(0)
-		}
-
-		// When recurseArgs is on, parse the arguments for the current command
-		// using all parent commands.
-		if cmd.recurseArgs && len(argsBeforeSubCmd) > 0 {
-			for i := range cmdChain {
-				// Make a copy of the arguments and insert the parent command name.
-				parentCmd := cmdChain[len(cmdChain)-1-i]
-				parentArgs := slices.Clone(argsBeforeSubCmd)
-				parentArgs = slices.Insert(parentArgs, 0, parentCmd.name)
-				parentCmd.parse(parentArgs, false)
-			}
-		}
-
-		// Print deprecated warning.
-		if cmd.deprecated {
-			_, _ = fmt.Fprintln(cmd.out(), fmt.Sprintf("Command %q is deprecated!", cmd.name))
+		if subCmd, _, arguments, err = parseCmd(cmd, arguments, executeCallback); err != nil {
+			return err
 		}
 
 		// Add command to chain.
 		cmdChain = append(cmdChain, cmd)
 
-		// Parse subcommand.
-		if subCmd != nil {
-			// Use subcommand for next parsing loop.
-			cmd = subCmd
-			subCmd = nil
-			cmd.active = true
-			arguments = argsAfterSubCmd
-			argsBeforeSubCmd = nil
-			argsAfterSubCmd = nil
-		} else {
+		if subCmd == nil {
 			// No subcommand found. Exit loop.
 			break
 		}
+
+		// Continue parsing the subcommand.
+		cmd = subCmd
 	}
 
 	// Execute the callback function of the last active command which has a callback defined,
@@ -404,12 +496,6 @@ func (c *Command) parse(arguments []string, executeCallback bool) error {
 	}
 
 	return nil
-}
-
-// Parse parses the command line arguments respecting the defined
-// command structure. Arguments for each command are parsed using pflag.
-func (c *Command) Parse(arguments []string) error {
-	return c.parse(arguments, true)
 }
 
 // printUsage calls the function defined via Command.SetUsageFunc
@@ -539,16 +625,41 @@ func GetDescription() string {
 	return command.GetDescription()
 }
 
-// Lookup searches for a registered command by its name.
+// GetFlags returns the registered FlagSet for the application.
+func GetFlags() *flag.FlagSet {
+	return command.flags
+}
+
+// Lookup searches for a registered subcommand by its name.
 // If no matching command is found, nil is returned.
-func Lookup(name string) *Command {
-	return command.Lookup(name)
+// Subsequent subcommands can be found by supplying multiple names.
+// When no or an empty name is supplied, the global command itself is returned.
+func Lookup(name ...string) *Command {
+	return command.Lookup(name...)
 }
 
 // Active searches for a registered command by its name
 // and reports its activation state. See IsActive.
 func Active(name string) bool {
 	return command.Active(name)
+}
+
+// GetActiveSubcommand returns the active subcommand of the global command
+// or nil when no subcommand is active.
+func GetActiveSubcommand() *Command {
+	return command.GetActiveSubcommand()
+}
+
+// GetFinalActiveCommand returns the final active command in the global command chain.
+// When no subcommand is active, the global command itself is returned.
+func GetFinalActiveCommand() *Command {
+	return command.GetFinalActiveCommand()
+}
+
+// GetActiveCommandChain returns a slice containing all active commands,
+// where the first element is the global command itself.
+func GetActiveCommandChain() []*Command {
+	return command.GetActiveCommandChain()
 }
 
 // CommandUsagesWrapped returns a string containing the usage information
@@ -565,7 +676,7 @@ func CommandUsages() string {
 }
 
 // FlagUsages returns a string containing the usage information
-// for all flags defined for this command.
+// for all flags defined for the application.
 func FlagUsages() string {
 	return command.FlagUsages()
 }
@@ -596,6 +707,56 @@ func Reset() {
 // This is the default function to print a usage message.
 func defaultUsage(command *Command) {
 	_, _ = fmt.Fprint(command.out(), command.CommandUsage())
+}
+
+func findLastFlagFromArgCC(cmdChain []*Command, arg string) (f *flag.Flag, remainder string) {
+	if cmdChain == nil || arg == "" {
+		return
+	}
+
+	if len(arg) >= 2 && arg[0] == '-' && arg[1] != '-' {
+		// The argument is a shorthand flag.
+		// Loop through all shorthands and find the last one that matches a registered flag.
+		// When a non-bool flag is found, the remaining characters are returned as the value.
+		// Otherwise, they are returned as the remainder.
+	argLoop:
+		//for iChar, argChar := range arg[1:] {
+		for iChar := 1; iChar < len(arg); iChar++ {
+			argChar := arg[iChar]
+			cs := string(argChar)
+			for iCmd := len(cmdChain) - 1; iCmd >= 0; iCmd-- {
+				cmd := cmdChain[iCmd]
+				if f2 := cmd.flags.ShorthandLookup(cs); f2 != nil {
+					f = f2
+					remainder = arg[iChar+1:]
+					if f.Value.Type() == "bool" || f.Value.Type() == "boolSlice" {
+						break
+					} else {
+						break argLoop
+					}
+				}
+			}
+		}
+	} else if len(arg) >= 3 && arg[0] == '-' && arg[1] == '-' && arg[2] != '-' {
+		// The argument is a longhand flag.
+		arg = arg[2:]
+		for iCmd := len(cmdChain) - 1; iCmd >= 0; iCmd-- {
+			cmd := cmdChain[iCmd]
+			f = cmd.flags.Lookup(arg)
+		}
+	}
+
+	return
+}
+
+func findLastFlagFromArgC(command *Command, arg string) (f *flag.Flag, remainder string) {
+	if command == nil || arg == "" {
+		return
+	}
+
+	cmdChain := []*Command{command}
+	f, remainder = findLastFlagFromArgCC(cmdChain, arg)
+	return
 }
 
 // filterSlice filters out all elements where test returns false.

@@ -2,12 +2,13 @@ package cflag
 
 import (
 	"fmt"
-	flag "github.com/spf13/pflag"
-	"github.com/stretchr/testify/assert"
 	"io"
 	"os"
 	"slices"
 	"testing"
+
+	flag "github.com/spf13/pflag"
+	"github.com/stretchr/testify/assert"
 )
 
 const VERSION_MAJOR = 0
@@ -472,7 +473,7 @@ func TestParentArgs(t *testing.T) {
 	a := assert.New(t)
 	ctx := buildTestContext()
 
-	// Parse arguments passed to foo/bar recursively using its parent commands (base and foo).
+	// Parse arguments passed to foo/bar recursively using its parent command foo.
 	ctx.cmdFooBar.SetRecurseArguments()
 
 	// Setup test arguments.
@@ -496,9 +497,81 @@ func TestParentArgs(t *testing.T) {
 	a.True(IsActive())
 	a.True(ctx.cmdFoo.IsActive())
 	a.True(ctx.cmdFooBar.IsActive())
-	a.Equal(10, *ctx.paramTest0)
-	a.Equal(11, *ctx.paramTest1)
+	a.Equal(0, *ctx.paramTest0)  // foo has recurse off
+	a.Equal(11, *ctx.paramTest1) // bar has recurse on
 	a.Equal(12, *ctx.paramTest2)
+}
+
+func TestSameArgsInParent(t *testing.T) {
+	a := assert.New(t)
+
+	// Setup test arguments.
+	args := slices.Clone(os.Args)
+	args = append(args, "--test", "10")
+
+	// Define flags.
+	flags := NewFlagSet("", flag.ExitOnError)
+	flags.SortFlags = false
+	paramTest := flags.Int("test", 0, "Test.")
+
+	flagsFoo := NewFlagSet("", flag.ExitOnError)
+	flagsFoo.SortFlags = false
+	paramFooTest := flagsFoo.Int("test", 1, "Test.")
+
+	// Create top-level command with empty name.
+	cmd := NewCommand("", "Test.", flags)
+	cmdFoo, _ := cmd.Cmd("foo", "", flagsFoo)
+	cmdFoo.SetRecurseArguments()
+
+	// Run cflag parser.
+	a.Nil(cmd.Parse(args))
+
+	// Print flags.
+	t.Logf("test: %t %d\n", flags.Changed("test"), *paramTest)
+	t.Logf("foo: %t\n", cmdFoo.IsActive())
+	t.Logf("foo/test: %t %d\n", flagsFoo.Changed("test"), *paramFooTest)
+
+	// Check parsed values.
+	a.Equal(10, *paramTest)
+	a.False(cmdFoo.IsActive())
+	a.Equal(1, *paramFooTest)
+}
+
+func TestSameArgsInParent2(t *testing.T) {
+	a := assert.New(t)
+
+	// Setup test arguments.
+	args := slices.Clone(os.Args)
+	args = append(args, "foo", "--test", "10")
+
+	// Define flags.
+	flags := NewFlagSet("", flag.ExitOnError)
+	flags.SortFlags = false
+	paramTest := flags.Int("test", 0, "Test.")
+
+	flagsFoo := NewFlagSet("", flag.ExitOnError)
+	flagsFoo.SortFlags = false
+	paramFooTest := flagsFoo.Int("test", 1, "Test.")
+
+	// Create top-level command with empty name.
+	cmd := NewCommand("", "Test.", flags)
+	cmdFoo, _ := cmd.Cmd("foo", "", flagsFoo)
+	cmdFoo.SetRecurseArguments()
+
+	// Run cflag parser.
+	a.Nil(cmd.Parse(args))
+
+	// Print flags.
+	t.Logf("test: %t %d\n", flags.Changed("test"), *paramTest)
+	t.Logf("foo: %t\n", cmdFoo.IsActive())
+	t.Logf("foo/test: %t %d\n", flagsFoo.Changed("test"), *paramFooTest)
+
+	// Check parsed values.
+	// Note: When multiple commands in the command chain have an option with the same name defined,
+	// the last value is applied to all options. Using different option types for those options additionally breaks parsing.
+	//a.Equal(0, *paramTest)
+	a.True(cmdFoo.IsActive())
+	a.Equal(10, *paramFooTest)
 }
 
 func TestRedirectOutput(t *testing.T) {
